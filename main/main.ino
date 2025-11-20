@@ -373,7 +373,7 @@ void pidMotors() {
                    .rightA = SET_SPEED - adjust, .rightB = 0});
     lastError = error;
 }
-
+ 
 void turnMotors() {
     // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
     if ((currentTime - stateEntryTimer) > TURN_DURATION) {
