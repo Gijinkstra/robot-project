@@ -7,24 +7,28 @@ constexpr byte MOTOR_1A_PIN = 5;
 constexpr byte MOTOR_1B_PIN = 6;
 constexpr byte MOTOR_2A_PIN = 9;
 constexpr byte MOTOR_2B_PIN = 10;
-constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2};
+constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4};
 constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / sizeof(AN_SENSOR_PINS[0]);
-constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4}; // There is no digital sensor count as we assume there is 1 digital for every 1 analog pin.
+constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4, 7, 8}; // There is no digital sensor count as we assume there is 1 digital for every 1 analog pin.
 
 // Motor constants.
 constexpr unsigned int MIN_SPEED = 0;               // |
-constexpr unsigned int MAX_SPEED = 200;             // |
+constexpr unsigned int MAX_SPEED = 60;             // |
 constexpr unsigned int SET_SPEED = 150;             // | - PWM values.
-constexpr unsigned int ROTATION_SPEED = 50;         // |
+constexpr unsigned int ROTATION_SPEED = 100;         // |
 constexpr unsigned int TURN_DURATION = 1000;       // |
+constexpr unsigned int MOTOR_OFFSET = 12;
 constexpr byte PWM_LEVEL_INCREMENT = 5;   // [ms]
 constexpr byte ACCELERATION_INTERVAL = 12;      // [ms]
 
+
 // IR sensor constants.
 constexpr unsigned int AN_SENSOR_MAX = 1023;
-constexpr int SETPOINT = (AN_SENSOR_COUNT * AN_SENSOR_MAX) / 2;
+constexpr unsigned int AN_SENSOR_MIN = 0;
 constexpr unsigned int TIMEOUT = 2500;  //  [ms]
 constexpr unsigned int WAIT_TIME = 300; //  [ms]
+constexpr unsigned int SCALING_FACTOR = 1000;
+constexpr unsigned int SETPOINT = (AN_SENSOR_COUNT - 1 * AN_SENSOR_MAX) / 2;
 
 // Misc
 constexpr int BAUD_RATE = 9600;
@@ -54,7 +58,7 @@ struct MotorSpeeds {
 
 namespace MotorPatterns {
     constexpr MotorSpeeds idle      = {0, 0, 0, 0};
-    constexpr MotorSpeeds forward   = {SET_SPEED, 0, SET_SPEED, 0};
+    constexpr MotorSpeeds forward   = {SET_SPEED, 0, SET_SPEED - MOTOR_OFFSET, 0};
     constexpr MotorSpeeds backward  = {0, SET_SPEED, 0, SET_SPEED};
     constexpr MotorSpeeds right     = {ROTATION_SPEED, 0, 0, ROTATION_SPEED};
     constexpr MotorSpeeds left      = {0, ROTATION_SPEED, ROTATION_SPEED, 0};
@@ -64,18 +68,25 @@ namespace MotorPatterns {
 // --------- Global variables ----------
 unsigned long stateEntryTimer;
 unsigned long currentTime;
+
 unsigned int motorInputSignal = 0;
 int lastError = 0;
 bool manualMode = false;
 bool autoMode = false;
+
 AutoState currentAutoState = IDLE;
 AutoState previousAutoState = IDLE;
 ManualState currentManualState = MANUAL_IDLE;
+
+int sensorArrayMax[AN_SENSOR_COUNT];
+int sensorArrayMin[AN_SENSOR_COUNT];
 
 // ---------- BLE Service --------------
 BLEService terminalService("19B10010-E8F2-537E-4F6C-D104768A1214"); // create service
 
 BLECharCharacteristic terminalCharacteristic("19B10011-E8F2-537E-4F6C-D104768A1214", BLERead | BLEWrite);
+
+BLEStringCharacteristic debugCharacteristic("19B10011-E8F2-537E-4F6C-D104768A1215", BLERead | BLENotify, 64);
 
 void setup() {
     Serial.begin(BAUD_RATE);
@@ -114,6 +125,8 @@ void loop() {
         stateEntryTimer = currentTime;
         previousAutoState = currentAutoState;
         Serial.println(currentAutoState);
+
+        // Need this to reinitialise whenever the robot turns around and travels back down the course.
         if (currentAutoState == PID_LOOP) {
             lastError = 0;
         }
@@ -124,24 +137,12 @@ void loop() {
     int linePosition = readAnalogSensors();
 
     // Serial.println("Output flag: " + String(digitalIRFlag));
-    // Serial.println("Line value: " + String(linePosition));
-}
-
-// Execute manual or automatic control scheme based on Serial data.
-// ******************* NOTE - DEPRECATED *************************************
-void selectControlScheme() {
-    if (Serial.available() > 0) {
-        char userInput = Serial.read();
-        userInput = tolower(userInput);
-        
-        if (userInput == 'm') {
-            Serial.println("User has selected manual control scheme.");
-            manualMode = true;
-        } else if (userInput == 'a') {
-            Serial.println("User has selected automatic control scheme. Initializing...");
-            manualMode = false;
-        }
-    }
+    Serial.println("Line value: " + String(linePosition));
+    Serial.println("Sensor 1 value: " + String(readNormalised(0)));
+    Serial.println("Sensor 2 value: " + String(readNormalised(1)));
+    Serial.println("Sensor 3 value: " + String(readNormalised(2)));
+    Serial.println("Sensor 4 value: " + String(readNormalised(3)));
+    Serial.println("Sensor 5 value: " + String(readNormalised(4)));
 }
 
 void startBLEModule() {
@@ -151,11 +152,12 @@ void startBLEModule() {
     }
 
     // Set the name so we know what we're looking for.
-    BLE.setLocalName("Timmy Turner Express");
+    BLE.setLocalName("Chicken Ball Special");
     BLE.setAdvertisedService(terminalService);
 
     // Following lines allow the reading and writing to the Arduino.
     terminalService.addCharacteristic(terminalCharacteristic);
+    terminalService.addCharacteristic(debugCharacteristic);
 
     BLE.addService(terminalService);
 
@@ -180,28 +182,32 @@ void monitorBLE() {
                 Serial.print("BLE command: ");
                 Serial.println(msg);
 
-                // Oh boy. This switch statement handles all the logic for the manual commands. Entering the same command twice will 
-                // cause the robot to stop. I think it's a nice QOL addition.
+                // Separate message parsing module as this fucntion is already triple nested.
                 parseBLEMessage(msg);
             }
         }
     }
 }
 
+void writeToBLE(const String &msg) {
+    debugCharacteristic.writeValue(msg + "\n");
+}
+
+// 
 void parseBLEMessage(char msg) {
     // Ensure always lower case to cut down on switch cases.
     switch (tolower(msg)) {
         case 'm':
             manualMode = true;
             autoMode = false;
-            Serial.println("Switched to MANUAL mode (BLE)");
+            writeToBLE("Switched to MANUAL mode (BLE)");
             currentManualState = MANUAL_IDLE;
             break;
 
         case 'a':
             manualMode = false;
             autoMode = true;
-            Serial.println("Switched to AUTO mode (BLE)");
+            writeToBLE("Switched to AUTO mode (BLE)");
             currentAutoState = IDLE;
             previousAutoState = IDLE;
             break;
@@ -209,10 +215,10 @@ void parseBLEMessage(char msg) {
         case 'f':
             if (manualMode) {
                 if (currentManualState == MANUAL_FORWARD) {
-                    Serial.println("Forward stopped");
+                    writeToBLE("Forward stopped");
                     currentManualState = MANUAL_STOP;
                 } else {
-                    Serial.println("Forward command");
+                    writeToBLE("Forward command");
                     currentManualState = MANUAL_FORWARD;
                 }
             }
@@ -221,53 +227,72 @@ void parseBLEMessage(char msg) {
         case 'b':
             if (manualMode) {
                 if (currentManualState == MANUAL_BACKWARDS) {
-                    Serial.println("Backwards stopped");
+                    writeToBLE("Backwards stopped");
                     currentManualState = MANUAL_STOP;
                 } else {
-                    Serial.println("Backwards command");
+                    writeToBLE("Backwards command");
                     currentManualState = MANUAL_BACKWARDS;
                 }
             }
             break;
+
         case 'r':
             if (manualMode) {
                 if (currentManualState == MANUAL_RIGHT) {
-                    Serial.println("Turning right stopped");
+                    writeToBLE("Turning right stopped");
                     currentManualState = MANUAL_STOP;
                 } else {
-                    Serial.println("Turning right");
+                    writeToBLE("Turning right");
                     currentManualState = MANUAL_RIGHT;
                 }
             }
-                break;
-        case 'l':
-        if (manualMode){
-            if (currentManualState == MANUAL_LEFT) {
-                Serial.println("Turning left stopped");
-                currentManualState = MANUAL_STOP;
-            } else {
-                Serial.println("Turning left");
-                currentManualState = MANUAL_LEFT;
-            }
-        }
             break;
+
+        case 'l':
+            if (manualMode){
+                if (currentManualState == MANUAL_LEFT) {
+                    writeToBLE("Turning left stopped");
+                    currentManualState = MANUAL_STOP;
+                } else {
+                    writeToBLE("Turning left");
+                    currentManualState = MANUAL_LEFT;
+                }
+            }
+            break;
+
+        case 'c':
+        // Do not allow sensor calibration outside of idle state.
+        if (!manualMode && !autoMode) {
+            writeToBLE("Starting calibration...");
+            calibrateSensors();
+            writeToBLE("Calibration completed.");
+            break;
+        }
         default:
-            Serial.println("Unknown BLE cmd");
+            writeToBLE("Unknown BLE cmd");
             currentManualState = MANUAL_IDLE;
     }
 }
 
-// This cuts down on code but is it as readable?
+// Returns the weighted sum of our normalised sensor array values.
 int readAnalogSensors() {
-    int linePosition = 0;
+    int weightedSum = 0;
+    int sum = 0;
 
     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        linePosition += analogRead(AN_SENSOR_PINS[i]) * i;
+        int reading = readNormalised(i);
+        weightedSum += reading * i * SCALING_FACTOR;
+        sum += reading;
     }
 
-    return linePosition;
+    if (sum == 0) {
+        return SETPOINT;
+    }
+
+    return weightedSum / sum;
 }
 
+// This function is only here to tell us when all the sensors are false at the end of the course.
 bool readDigitalSensors() {
     bool digSensorArray[AN_SENSOR_COUNT];
     bool digitalIRFlag;
@@ -275,16 +300,59 @@ bool readDigitalSensors() {
     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
         digSensorArray[i] = digitalRead(DIG_SENSOR_PINS[i]);
     }
-    // Surely there's a cleaner way of doing this.
+    // Sensor logic was devised using inverted logic for some reason.
     return (!digSensorArray[0] && !digSensorArray[1] && !digSensorArray[2]);
+}
+
+void calibrateSensors() {
+    byte DELAY_TIME = 5;
+    unsigned int CALIBRATION_TIMER = 15000;
+    static unsigned long calibrationStartTime = millis();
+
+    // Initialise all these to 1023 and 0 (default values).
+    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+        sensorArrayMax[i] = AN_SENSOR_MAX;
+        sensorArrayMin[i] = AN_SENSOR_MIN;
+    }
+
+    // Spend 15 seconds in the calibration routine.
+    while ((millis() - calibrationStartTime) < CALIBRATION_TIMER) {
+        for (byte s = 0; s < AN_SENSOR_COUNT; s++) {
+            int currentReading = analogRead(AN_SENSOR_PINS[s]);
+
+            if (currentReading < sensorArrayMin[s]) {
+                sensorArrayMin[s] = currentReading;
+            }
+            if (currentReading > sensorArrayMax[s]) {
+                sensorArrayMax[s] = currentReading;
+            }
+        }
+    }
+}
+
+int readNormalised(int sensorIndex) {
+    // The maximum and minimum values we want to constrain the reading to.
+    int NORMALISED_MIN = 0;
+    int NORMALISED_MAX = 1000;
+
+    // Read the sensor and map to the sensor arrays.
+    int rawSensorValue = analogRead(AN_SENSOR_PINS[sensorIndex]);
+    int normSensorValue = map(rawSensorValue,
+                              sensorArrayMin[sensorIndex],
+                              sensorArrayMax[sensorIndex],
+                              NORMALISED_MIN,
+                              NORMALISED_MAX);
+
+    // Logic flip here so high reading means the line is detected. Less confusing.
+    return NORMALISED_MAX - normSensorValue;
 }
 
 // Accept the struct and constrain the values between 0 and 250;
 void setMotorSpeed(const MotorSpeeds &speed) {
-    analogWrite(MOTOR_1A_PIN, constrain(speed.leftA, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_1B_PIN, constrain(speed.leftB, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_2A_PIN, constrain(speed.rightA, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_2B_PIN, constrain(speed.rightB, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_2A_PIN, constrain(speed.leftA, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_2B_PIN, constrain(speed.leftB, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_1A_PIN, constrain(speed.rightA, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_1B_PIN, constrain(speed.rightB, MIN_SPEED, MAX_SPEED));
 }
 
 void manualStateMachine() {
@@ -334,7 +402,8 @@ void accelerateMotors() {
     bool digitalIRFlag = readDigitalSensors();
     // The digital IR Flag here ensures the robot has accelerated past the black line so we don't
     // have any funny behaviour with the sensors.
-    if ((motorInputSignal >= SET_SPEED) && !digitalIRFlag) {
+    // if ((motorInputSignal >= SET_SPEED) && !digitalIRFlag) {
+    if (motorInputSignal >= SET_SPEED) {
         currentAutoState = PID_LOOP;
         return;
     }
@@ -349,24 +418,24 @@ void accelerateMotors() {
 }
 
 void pidMotors() {
-    /* Initial value calculation: SPEED VALUE (122) / MAX ERROR (2000) = KP
+    /* Initial value calculation: MAX SPEED VALUE (60) / MAX ERROR (2000) = KP
     Go down in value by 0.01 to check behaviour, then go up and try again. */
-    constexpr float KP = 0.061;
+    constexpr float KP = 0.03;
     constexpr float KD = 0;
 
     // Check if the digital pins are active before doing anything else.
     bool digitalIRFlag = readDigitalSensors();
 
     // Logic to transition out of pid loop based on IR sensor feedback.
-    if (digitalIRFlag) {
-        currentAutoState = STOP;
-        return;
-    }
+    // if (digitalIRFlag) {
+    //     currentAutoState = STOP;
+    //     return;
+    // }
 
     // Read in the current line position and adjust the error.
     int linePosition = readAnalogSensors();
     int error = SETPOINT - linePosition;
-    int adjust = error * KP + KD * (error - lastError);
+    int adjust = (error * KP) + (KD * (error - lastError));
 
     // Set the motor speed based on the adjustment.
     setMotorSpeed({.leftA = SET_SPEED + adjust, .leftB = 0, 
@@ -374,7 +443,7 @@ void pidMotors() {
     lastError = error;
 }
  
-void turnMotors() {
+void turnMotors() { 
     // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
     if ((currentTime - stateEntryTimer) > TURN_DURATION) {
         currentAutoState = ACCELERATE;
