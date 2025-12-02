@@ -54,8 +54,8 @@
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/arm-none-eabi/include",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/lib/gcc/arm-none-eabi/7.2.1/include",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/lib/gcc/arm-none-eabi/7.2.1/include-fixed",
-                "C:/Users/ademp/OneDrive/Documents/Arduino/libraries/ArduinoBLE",
-                "C:/Users/ademp/OneDrive/Documents/Arduino/libraries/ArduinoBLE/src"
+                "C:\\Dev\\projects\\robot-project\\libs\\ArduinoBLE\\src",
+                "C:\\Dev\\projects\\robot-project\\libs\\ArduinoBLE"
             ],
             "forcedInclude": [
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/hardware/renesas_uno/1.5.1/cores/arduino/Arduino.h"

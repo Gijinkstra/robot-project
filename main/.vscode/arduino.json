@@ -1,4 +1,0 @@
-{
-    "board": "arduino:renesas_uno:unor4wifi",
-    "sketch": "main.ino"
-}
