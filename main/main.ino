@@ -7,20 +7,19 @@ constexpr byte MOTOR_1A_PIN = 5;
 constexpr byte MOTOR_1B_PIN = 6;
 constexpr byte MOTOR_2A_PIN = 9;
 constexpr byte MOTOR_2B_PIN = 10;
-constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4};
+constexpr byte AN_SENSOR_PINS[] = {A3, A0, A1, A2, A4};
 constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / sizeof(AN_SENSOR_PINS[0]);
-constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4, 7, 8}; // There is no digital sensor count as we assume there is 1 digital for every 1 analog pin.
+constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4}; // There is no digital sensor count as we assume there is 1 digital for every 1 analog pin.
 
 // Motor constants.
 constexpr unsigned int MIN_SPEED = 0;               // |
-constexpr unsigned int MAX_SPEED = 60;             // |
-constexpr unsigned int SET_SPEED = 150;             // | - PWM values.
-constexpr unsigned int ROTATION_SPEED = 100;         // |
+constexpr unsigned int MAX_SPEED = 255;             // |
+constexpr unsigned int SET_SPEED = 100;             // | - PWM values.
+constexpr unsigned int TURN_SPEED = 100;         // |
 constexpr unsigned int TURN_DURATION = 1000;       // |
 constexpr unsigned int MOTOR_OFFSET = 12;
 constexpr byte PWM_LEVEL_INCREMENT = 5;   // [ms]
-constexpr byte ACCELERATION_INTERVAL = 12;      // [ms]
-
+constexpr byte ACCELERATION_INTERVAL = 5;      // [ms]
 
 // IR sensor constants.
 constexpr unsigned int AN_SENSOR_MAX = 1023;
@@ -28,7 +27,9 @@ constexpr unsigned int AN_SENSOR_MIN = 0;
 constexpr unsigned int TIMEOUT = 2500;  //  [ms]
 constexpr unsigned int WAIT_TIME = 300; //  [ms]
 constexpr unsigned int SCALING_FACTOR = 1000;
-constexpr unsigned int SETPOINT = (AN_SENSOR_COUNT - 1 * AN_SENSOR_MAX) / 2;
+constexpr unsigned int SETPOINT = 2000;
+constexpr unsigned int SHARP_LEFT_THR = 3000;
+constexpr unsigned int SHARP_RIGHT_THR = 1000;
 
 // Misc
 constexpr int BAUD_RATE = 9600;
@@ -36,7 +37,9 @@ enum AutoState {IDLE,
                 ACCELERATE,
                 PID_LOOP,
                 STOP,
-                TURN
+                TURN_LEFT,
+                TURN_RIGHT,
+                LINE_FINISH
 };
 
 enum ManualState {MANUAL_IDLE,
@@ -50,18 +53,18 @@ enum ManualState {MANUAL_IDLE,
 // This struct method is so cool. Instead of having to pass loads of values into setMotorSpeed(),
 // the struct can handle the defaults each time, which is so so handy.
 struct MotorSpeeds {
-    unsigned int leftA;
-    unsigned int leftB;
-    unsigned int rightA;
-    unsigned int rightB;
+    int leftA;
+    int leftB;
+    int rightA;
+    int rightB;
 };
 
 namespace MotorPatterns {
-    constexpr MotorSpeeds idle      = {0, 0, 0, 0};
-    constexpr MotorSpeeds forward   = {SET_SPEED, 0, SET_SPEED - MOTOR_OFFSET, 0};
-    constexpr MotorSpeeds backward  = {0, SET_SPEED, 0, SET_SPEED};
-    constexpr MotorSpeeds right     = {ROTATION_SPEED, 0, 0, ROTATION_SPEED};
-    constexpr MotorSpeeds left      = {0, ROTATION_SPEED, ROTATION_SPEED, 0};
+    constexpr MotorSpeeds idle      = {MIN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED};
+    constexpr MotorSpeeds forward   = {SET_SPEED, MIN_SPEED, SET_SPEED - MOTOR_OFFSET, MIN_SPEED};
+    constexpr MotorSpeeds backward  = {MIN_SPEED, SET_SPEED, MIN_SPEED, SET_SPEED};
+    constexpr MotorSpeeds right     = {TURN_SPEED, MIN_SPEED, MIN_SPEED, TURN_SPEED};
+    constexpr MotorSpeeds left      = {MIN_SPEED, TURN_SPEED, TURN_SPEED, MIN_SPEED};
     constexpr MotorSpeeds stop      = {1, 1, 1, 1};     // Set theses to 1 to draw the least amount of power.
 }
 
@@ -69,8 +72,9 @@ namespace MotorPatterns {
 unsigned long stateEntryTimer;
 unsigned long currentTime;
 
-unsigned int motorInputSignal = 0;
+int motorInputSignal = 0;
 int lastError = 0;
+unsigned int linePosition;
 bool manualMode = false;
 bool autoMode = false;
 
@@ -78,8 +82,9 @@ AutoState currentAutoState = IDLE;
 AutoState previousAutoState = IDLE;
 ManualState currentManualState = MANUAL_IDLE;
 
-int sensorArrayMax[AN_SENSOR_COUNT];
-int sensorArrayMin[AN_SENSOR_COUNT];
+int sensorArrMax[AN_SENSOR_COUNT];
+int sensorArrMin[AN_SENSOR_COUNT];
+int sensorArrValues[AN_SENSOR_COUNT];
 
 // ---------- BLE Service --------------
 BLEService terminalService("19B10010-E8F2-537E-4F6C-D104768A1214"); // create service
@@ -107,7 +112,8 @@ void setup() {
 void loop() {
     currentTime = millis();
 
-    // This function contains all the logic for the BLE and parsing the commands. Probably too much.
+    readAnalogSensors();
+    calculateLinePosition();
     monitorBLE();
     
     if (!manualMode && !autoMode) {
@@ -134,15 +140,14 @@ void loop() {
 
     // ****************** DEBUGGING - REMOVE *****************************
     readDigitalSensors();
-    int linePosition = readAnalogSensors();
+    Serial.print("Line position: "); Serial.println(linePosition);
 
+    char serialPrint[30];
     // Serial.println("Output flag: " + String(digitalIRFlag));
-    Serial.println("Line value: " + String(linePosition));
-    Serial.println("Sensor 1 value: " + String(readNormalised(0)));
-    Serial.println("Sensor 2 value: " + String(readNormalised(1)));
-    Serial.println("Sensor 3 value: " + String(readNormalised(2)));
-    Serial.println("Sensor 4 value: " + String(readNormalised(3)));
-    Serial.println("Sensor 5 value: " + String(readNormalised(4)));
+    for (int i = 0; i < AN_SENSOR_COUNT; i++) {
+        sprintf(serialPrint, "Sensor %d value: %d", i, sensorArrValues[i]);
+        Serial.println(serialPrint);
+    }
 }
 
 void startBLEModule() {
@@ -160,7 +165,6 @@ void startBLEModule() {
     terminalService.addCharacteristic(debugCharacteristic);
 
     BLE.addService(terminalService);
-
     terminalCharacteristic.writeValue(0);
 
     // Allow us to view it on the device list.
@@ -264,7 +268,7 @@ void parseBLEMessage(char msg) {
         // Do not allow sensor calibration outside of idle state.
         if (!manualMode && !autoMode) {
             writeToBLE("Starting calibration...");
-            calibrateSensors();
+            // calibrateSensors();
             writeToBLE("Calibration completed.");
             break;
         }
@@ -274,22 +278,11 @@ void parseBLEMessage(char msg) {
     }
 }
 
-// Returns the weighted sum of our normalised sensor array values.
-int readAnalogSensors() {
-    int weightedSum = 0;
-    int sum = 0;
-
+// Read the analog sensor values into an array.
+void readAnalogSensors() {
     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        int reading = readNormalised(i);
-        weightedSum += reading * i * SCALING_FACTOR;
-        sum += reading;
-    }
-
-    if (sum == 0) {
-        return SETPOINT;
-    }
-
-    return weightedSum / sum;
+        sensorArrValues[i] = analogRead(AN_SENSOR_PINS[i]);
+    };
 }
 
 // This function is only here to tell us when all the sensors are false at the end of the course.
@@ -304,48 +297,48 @@ bool readDigitalSensors() {
     return (!digSensorArray[0] && !digSensorArray[1] && !digSensorArray[2]);
 }
 
-void calibrateSensors() {
-    byte DELAY_TIME = 5;
-    unsigned int CALIBRATION_TIMER = 15000;
-    static unsigned long calibrationStartTime = millis();
+// void calibrateSensors() {
+//     const unsigned int CALIBRATION_TIMER = 5000;
+//     unsigned long calibrationStartTime = millis();
 
-    // Initialise all these to 1023 and 0 (default values).
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        sensorArrayMax[i] = AN_SENSOR_MAX;
-        sensorArrayMin[i] = AN_SENSOR_MIN;
-    }
+//     // Initialise all these to 1023 and 0 (default values).
+//     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+//         sensorArrayMax[i] = AN_SENSOR_MIN;
+//         sensorArrayMin[i] = AN_SENSOR_MAX;
+//     }
 
-    // Spend 15 seconds in the calibration routine.
-    while ((millis() - calibrationStartTime) < CALIBRATION_TIMER) {
-        for (byte s = 0; s < AN_SENSOR_COUNT; s++) {
-            int currentReading = analogRead(AN_SENSOR_PINS[s]);
+//     // Spend 15 seconds in the calibration routine.
+//     while ((millis() - calibrationStartTime) < CALIBRATION_TIMER) {
+//         for (byte s = 0; s < AN_SENSOR_COUNT; s++) {
+//             int currentReading = analogRead(AN_SENSOR_PINS[s]);
 
-            if (currentReading < sensorArrayMin[s]) {
-                sensorArrayMin[s] = currentReading;
-            }
-            if (currentReading > sensorArrayMax[s]) {
-                sensorArrayMax[s] = currentReading;
-            }
-        }
-    }
-}
+//             if (currentReading < sensorArrayMin[s]) {
+//                 sensorArrayMin[s] = currentReading;
+//             }
+//             if (currentReading > sensorArrayMax[s]) {
+//                 sensorArrayMax[s] = currentReading;
+//             }
+//         }
+//         delay(5);
+//     }
+// }
 
-int readNormalised(int sensorIndex) {
-    // The maximum and minimum values we want to constrain the reading to.
-    int NORMALISED_MIN = 0;
-    int NORMALISED_MAX = 1000;
+// int readNormalised(int sensorIndex) {
+//     // The maximum and minimum values we want to constrain the reading to.
+//     int NORMALISED_MIN = 0;
+//     int NORMALISED_MAX = 1000;
 
-    // Read the sensor and map to the sensor arrays.
-    int rawSensorValue = analogRead(AN_SENSOR_PINS[sensorIndex]);
-    int normSensorValue = map(rawSensorValue,
-                              sensorArrayMin[sensorIndex],
-                              sensorArrayMax[sensorIndex],
-                              NORMALISED_MIN,
-                              NORMALISED_MAX);
+//     // Read the sensor and map to the sensor arrays.
+//     int rawSensorValue = analogRead(AN_SENSOR_PINS[sensorIndex]);
+//     int normSensorValue = map(rawSensorValue,
+//                               sensorArrayMin[sensorIndex],
+//                               sensorArrayMax[sensorIndex],
+//                               NORMALISED_MIN,
+//                               NORMALISED_MAX);
 
-    // Logic flip here so high reading means the line is detected. Less confusing.
-    return NORMALISED_MAX - normSensorValue;
-}
+//     // Logic flip here so high reading means the line is detected. Less confusing.
+//     return NORMALISED_MAX - normSensorValue;
+// }
 
 // Accept the struct and constrain the values between 0 and 250;
 void setMotorSpeed(const MotorSpeeds &speed) {
@@ -374,7 +367,9 @@ void autoStateMachine() {
         case IDLE:          idleMotors();                               break;
         case ACCELERATE:    accelerateMotors();                         break;
         case PID_LOOP:      pidMotors();                                break;
-        case TURN:          turnMotors();                               break;
+        case TURN_LEFT:     turnMotorLeft();         break;
+        case TURN_RIGHT:    turnMotorRight();        break;
+        case LINE_FINISH:   lineFinish();                               break;
         case STOP:          stopMotors();                               break;
         default:            Serial.println("ERROR: Default case");      break;
     }
@@ -388,8 +383,8 @@ void idleMotors() {
 }
 
 void stopMotors() {
-    if ((currentTime - stateEntryTimer) > ACCELERATION_INTERVAL) {
-        currentAutoState = TURN;
+    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
+        currentAutoState = ACCELERATE;
     } else {
         setMotorSpeed(MotorPatterns::stop);
     }
@@ -417,37 +412,89 @@ void accelerateMotors() {
     }
 }
 
+// Calculate the weighted line position from the analog sensors.
+void calculateLinePosition() {
+    int weightedSum = 0;
+    int sum = 0;
+
+    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+        int reading = sensorArrValues[i];
+        weightedSum += reading * i * SCALING_FACTOR;
+        sum += reading;
+    }
+
+    if (sum == 0) {
+        linePosition = SETPOINT;
+    }
+
+    linePosition = weightedSum / sum;
+}
+
 void pidMotors() {
     /* Initial value calculation: MAX SPEED VALUE (60) / MAX ERROR (2000) = KP
     Go down in value by 0.01 to check behaviour, then go up and try again. */
-    constexpr float KP = 0.03;
+    constexpr float KP = 0.7;
     constexpr float KD = 0;
 
     // Check if the digital pins are active before doing anything else.
     bool digitalIRFlag = readDigitalSensors();
 
-    // Logic to transition out of pid loop based on IR sensor feedback.
-    // if (digitalIRFlag) {
-    //     currentAutoState = STOP;
+    // Read in the current line position and adjust the error.
+    int error = SETPOINT - linePosition;
+    float adjust = (error * KP) + (KD * (error - lastError));
+
+    // if (linePosition > SHARP_LEFT_THR) {
+    //     setMotorSpeed({TURN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED});
     //     return;
     // }
 
-    // Read in the current line position and adjust the error.
-    int linePosition = readAnalogSensors();
-    int error = SETPOINT - linePosition;
-    int adjust = (error * KP) + (KD * (error - lastError));
+    // if (linePosition < SHARP_RIGHT_THR) {
+    //     setMotorSpeed({MIN_SPEED, MIN_SPEED, TURN_SPEED, MIN_SPEED});
+    //     return;
+    // }
 
     // Set the motor speed based on the adjustment.
-    setMotorSpeed({.leftA = SET_SPEED + adjust, .leftB = 0, 
-                   .rightA = SET_SPEED - adjust, .rightB = 0});
+    int leftSpeed = SET_SPEED - adjust;
+    int rightSpeed = SET_SPEED + adjust;
+
+    setMotorSpeed({leftSpeed, MIN_SPEED, rightSpeed, MIN_SPEED});
     lastError = error;
 }
- 
-void turnMotors() { 
+
+void lineFinish() {
     // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
     if ((currentTime - stateEntryTimer) > TURN_DURATION) {
         currentAutoState = ACCELERATE;
     } else {
         setMotorSpeed(MotorPatterns::right);
+    }
+}
+
+void turnMotors() {
+    // rotate robot in place
+    setMotorSpeed(MotorPatterns::right);
+
+    // stop when ANY sensor sees the line again
+    if (!readDigitalSensors()) {
+        currentAutoState = ACCELERATE;
+        return;
+    }
+}
+
+void turnMotorLeft() {
+    setMotorSpeed(MotorPatterns::left);
+
+    if (linePosition < SHARP_LEFT_THR) {
+        currentAutoState = PID_LOOP;
+        return;
+    }
+}
+
+void turnMotorRight() {
+    setMotorSpeed(MotorPatterns::right);
+
+    if (linePosition > SHARP_RIGHT_THR) {
+        currentAutoState = PID_LOOP;
+        return;
     }
 }

@@ -54,8 +54,8 @@
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/arm-none-eabi/include",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/lib/gcc/arm-none-eabi/7.2.1/include",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/lib/gcc/arm-none-eabi/7.2.1/include-fixed",
-                "C:\\Dev\\projects\\robot-project\\libs\\ArduinoBLE\\src",
-                "C:\\Dev\\projects\\robot-project\\libs\\ArduinoBLE"
+                "C:/Dev/projects/robot-project/libs/ArduinoBLE/src",
+                "C:/Dev/projects/robot-project/libs/ArduinoBLE"
             ],
             "forcedInclude": [
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/hardware/renesas_uno/1.5.1/cores/arduino/Arduino.h"
@@ -107,7 +107,7 @@
                 "BACKTRACE_SUPPORT",
                 "ARDUINO_UNOR4_WIFI",
                 "ARDUINO=10607",
-                "PROJECT_NAME=\"C:\\Users\\ademp\\AppData\\Local\\arduino\\sketches\\04E3E5DA88F789B8A7E4C35DBC67A48A/main.ino\"",
+                "PROJECT_NAME=\"C:\\Users\\ademp\\AppData\\Local\\arduino\\sketches\\E486AE2CC879848789D5C3D05CB8D774/main.ino\"",
                 "ARDUINO_UNOWIFIR4",
                 "ARDUINO_ARCH_RENESAS_UNO",
                 "ARDUINO_ARCH_RENESAS",
