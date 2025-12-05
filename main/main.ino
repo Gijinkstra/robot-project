@@ -1,57 +1,53 @@
 // --------- Libraries ---------------------
 #include <ArduinoBLE.h>
-// --------- Global constants --------------
-// Pins
-// *********** NOTE - Sort these into arrays once everything is wired up **************
-constexpr byte MOTOR_1A_PIN = 5;
-constexpr byte MOTOR_1B_PIN = 6;
-constexpr byte MOTOR_2A_PIN = 9;
-constexpr byte MOTOR_2B_PIN = 10;
+
+// --------- Hardware Config ---------------
+constexpr byte MOTOR_PINS[] = {9, 10, 5, 6}; // Left to right.
 constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4};
-constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / sizeof(AN_SENSOR_PINS[0]);
-constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4}; // There is no digital sensor count as we assume there is 1 digital for every 1 analog pin.
-
-// Motor constants.
-constexpr unsigned int MIN_SPEED = 0;               // |
-constexpr unsigned int MAX_SPEED = 255;             // |
-constexpr unsigned int SET_SPEED = 100;             // | - PWM values.
-constexpr unsigned int TURN_SPEED = 100;         // |
-constexpr unsigned int TURN_DURATION = 1000;       // |
-constexpr unsigned int MOTOR_OFFSET = 12;
-constexpr byte PWM_LEVEL_INCREMENT = 5;   // [ms]
-constexpr byte ACCELERATION_INTERVAL = 5;      // [ms]
-
-// IR sensor constants.
+constexpr byte MOTOR_PIN_COUNT = sizeof(MOTOR_PINS) / 
+                                 sizeof(MOTOR_PINS[0]);
+constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / 
+                                 sizeof(AN_SENSOR_PINS[0]);
+constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4}; 
+constexpr unsigned int MIN_SPEED = 0;
+constexpr unsigned int MAX_SPEED = 255;   
 constexpr unsigned int AN_SENSOR_MAX = 1023;
 constexpr unsigned int AN_SENSOR_MIN = 0;
-constexpr unsigned int TIMEOUT = 2500;  //  [ms]
-constexpr unsigned int WAIT_TIME = 300; //  [ms]
+constexpr unsigned int BAUD_RATE = 9600;
+
+// --------- Control Config ---------------
+constexpr byte PWM_LEVEL_INCREMENT = 5;
+constexpr byte ACCELERATION_INTERVAL = 5;
+constexpr unsigned int TURN_DURATION = 1000;
+constexpr unsigned int MOTOR_OFFSET = 12;
+constexpr unsigned int SET_SPEED = 100;
+constexpr unsigned int TURN_SPEED = 100;
 constexpr unsigned int SCALING_FACTOR = 1000;
 constexpr unsigned int SETPOINT = 2000;
 constexpr unsigned int SHARP_LEFT_THR = 3000;
 constexpr unsigned int SHARP_RIGHT_THR = 1000;
+constexpr unsigned int DEADBAND_ERROR = 20;
 
-// Misc
-constexpr int BAUD_RATE = 9600;
-enum AutoState {IDLE,
-                ACCELERATE,
-                PID_LOOP,
-                STOP,
-                TURN_LEFT,
-                TURN_RIGHT,
-                LINE_FINISH
+// --------- Control Types ---------------
+enum class AutoState {
+    Idle,
+    Accelerate,
+    PIDLoop,
+    Stop,
+    TurnLeft,
+    TurnRight,
+    LineFinish
 };
 
-enum ManualState {MANUAL_IDLE,
-                  MANUAL_FORWARD,
-                  MANUAL_BACKWARDS,
-                  MANUAL_RIGHT,
-                  MANUAL_LEFT,
-                  MANUAL_STOP
+enum class ManualState {
+    Idle,
+    Forward,
+    Backwards,
+    Right,
+    Left,
+    Stop
 };
 
-// This struct method is so cool. Instead of having to pass loads of values into setMotorSpeed(),
-// the struct can handle the defaults each time, which is so so handy.
 struct MotorSpeeds {
     int leftA;
     int leftB;
@@ -60,12 +56,22 @@ struct MotorSpeeds {
 };
 
 namespace MotorPatterns {
-    constexpr MotorSpeeds idle      = {MIN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED};
-    constexpr MotorSpeeds forward   = {SET_SPEED, MIN_SPEED, SET_SPEED - MOTOR_OFFSET, MIN_SPEED};
-    constexpr MotorSpeeds backward  = {MIN_SPEED, SET_SPEED, MIN_SPEED, SET_SPEED};
-    constexpr MotorSpeeds right     = {TURN_SPEED, MIN_SPEED, MIN_SPEED, TURN_SPEED};
-    constexpr MotorSpeeds left      = {MIN_SPEED, TURN_SPEED, TURN_SPEED, MIN_SPEED};
-    constexpr MotorSpeeds stop      = {1, 1, 1, 1};     // Set theses to 1 to draw the least amount of power for braking.
+    constexpr MotorSpeeds idle      = {MIN_SPEED, MIN_SPEED, 
+                                       MIN_SPEED, MIN_SPEED};
+    constexpr MotorSpeeds forward   = {SET_SPEED, MIN_SPEED, 
+                                       SET_SPEED - MOTOR_OFFSET, MIN_SPEED};
+    constexpr MotorSpeeds backward  = {MIN_SPEED, SET_SPEED, 
+                                       MIN_SPEED, SET_SPEED};
+    constexpr MotorSpeeds right     = {TURN_SPEED, MIN_SPEED, 
+                                       MIN_SPEED, TURN_SPEED};
+    constexpr MotorSpeeds left      = {MIN_SPEED, TURN_SPEED, 
+                                       TURN_SPEED, MIN_SPEED};
+    constexpr MotorSpeeds stop      = {1, 1, 1, 1};
+}
+
+namespace PIDGains {
+    constexpr float Kp = 0.8f;
+    constexpr float Kd = 0.01f;
 }
 
 // --------- Global variables ----------
@@ -78,34 +84,46 @@ unsigned int linePosition;
 bool manualMode = false;
 bool autoMode = false;
 
-AutoState currentAutoState = IDLE;
-AutoState previousAutoState = IDLE;
-ManualState currentManualState = MANUAL_IDLE;
+AutoState currentAutoState = AutoState::Idle;
+AutoState previousAutoState = AutoState::Idle;
+ManualState currentManualState = ManualState::Idle;
 
 int sensorArrMax[AN_SENSOR_COUNT];
 int sensorArrMin[AN_SENSOR_COUNT];
 int sensorArrValues[AN_SENSOR_COUNT];
 
 // ---------- BLE Service --------------
-BLEService terminalService("19B10010-E8F2-537E-4F6C-D104768A1214"); // create service
-
+BLEService terminalService("19B10010-E8F2-537E-4F6C-D104768A1214");
 BLECharCharacteristic terminalCharacteristic("19B10011-E8F2-537E-4F6C-D104768A1214", BLERead | BLEWrite);
-
 BLEStringCharacteristic debugCharacteristic("19B10011-E8F2-537E-4F6C-D104768A1215", BLERead | BLENotify, 64);
 
+// ------------ HARDWARE LAYER ---------
+void initHardware();
+void setMotorSpeed(const MotorSpeeds &speed);
+void readAnalogSensors();
+bool readDigitalSensors();
+unsigned int calculateLinePosition();
+
+// ------------ CONTROL LAYER ----------
+void manualStateMachine();
+void autoStateMachine();
+void idleMotors();
+void accelerateMotors();
+void lineFinish();
+void turnMotors();
+void turnMotorLeft();
+void turnMotorRight();
+void stopMotors();
+void pidMotors();
+
+// ------------ COMMS LAYER ----------
+void startBLEModule();
+void monitorBLE();
+void parseBLEMessage(char msg);
+void writeToBLE(const String &msg);
+
 void setup() {
-    Serial.begin(BAUD_RATE);
-    pinMode(MOTOR_1A_PIN, OUTPUT);
-    pinMode(MOTOR_1B_PIN, OUTPUT);
-    pinMode(MOTOR_2A_PIN, OUTPUT);
-    pinMode(MOTOR_2B_PIN, OUTPUT);
-
-    // Allows scaling of the pins easily.
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        pinMode(AN_SENSOR_PINS[i], INPUT);
-        pinMode(DIG_SENSOR_PINS[i], INPUT);
-    }
-
+    initHardware();
     startBLEModule();
 }
 
@@ -113,7 +131,6 @@ void loop() {
     currentTime = millis();
 
     readAnalogSensors();
-    calculateLinePosition();
     monitorBLE();
     
     if (!manualMode && !autoMode) {
@@ -124,18 +141,6 @@ void loop() {
         manualStateMachine();
     } else if (autoMode) {
         autoStateMachine();
-    }
-
-    // Timer to determine change of state.
-    if (currentAutoState != previousAutoState) {
-        stateEntryTimer = currentTime;
-        previousAutoState = currentAutoState;
-        Serial.println(currentAutoState);
-
-        // Need this to reinitialise whenever the robot turns around and travels back down the course.
-        if (currentAutoState == PID_LOOP) {
-            lastError = 0;
-        }
     }
 
     // ****************** DEBUGGING - REMOVE *****************************
@@ -149,6 +154,210 @@ void loop() {
         Serial.println(serialPrint);
     }
 }
+
+// ------------ HARDWARE LAYER ---------
+void initHardware() {
+    Serial.begin(BAUD_RATE);
+    for (byte i = 0; i < MOTOR_PIN_COUNT; i++) {
+        pinMode(MOTOR_PINS[i], OUTPUT);
+    }
+
+    // Allows scaling of the pins easily.
+    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+        pinMode(AN_SENSOR_PINS[i], INPUT);
+        pinMode(DIG_SENSOR_PINS[i], INPUT);
+    }
+}
+
+void setMotorSpeed(const MotorSpeeds &speed) {
+    analogWrite(MOTOR_PINS[0], constrain(speed.leftA, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_PINS[1], constrain(speed.leftB, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_PINS[2], constrain(speed.rightA, MIN_SPEED, MAX_SPEED));
+    analogWrite(MOTOR_PINS[3], constrain(speed.rightB, MIN_SPEED, MAX_SPEED));
+}
+
+void readAnalogSensors() {
+    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+        sensorArrValues[i] = analogRead(AN_SENSOR_PINS[i]);
+    }
+}
+
+bool readDigitalSensors() {
+    bool digSensorArray[AN_SENSOR_COUNT];
+    bool digitalIRFlag;
+
+    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+        digSensorArray[i] = digitalRead(DIG_SENSOR_PINS[i]);
+    }
+    // Sensor logic was devised using inverted logic for some reason.
+    return (!digSensorArray[0] && !digSensorArray[1] && !digSensorArray[2]);
+}
+
+unsigned int calculateLinePosition() {
+    long weightedSum = 0;
+    int sum = 0;
+
+    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
+        int reading = sensorArrValues[i];
+        weightedSum += reading * i * SCALING_FACTOR;
+        sum += reading;
+    }
+
+    if (sum == 0) {
+        linePosition = SETPOINT;
+        return;
+    }
+
+    linePosition = weightedSum / sum;
+    return linePosition;
+}
+
+// ------------ CONTROL LAYER ---------
+
+void manualStateMachine() {
+    switch (currentManualState) {
+        case ManualState::Idle:       setMotorSpeed(MotorPatterns::idle);         break;
+        case ManualState::Forward:    setMotorSpeed(MotorPatterns::forward);      break;
+        case ManualState::Backwards:  setMotorSpeed(MotorPatterns::backward);     break;
+        case ManualState::Right:      setMotorSpeed(MotorPatterns::right);        break;
+        case ManualState::Left:       setMotorSpeed(MotorPatterns::left);         break;
+        case ManualState::Stop:       setMotorSpeed(MotorPatterns::stop);         break;
+        default:                      Serial.println("ERROR: Default case");      break;
+    }
+}
+
+void autoStateMachine() {
+    switch (currentAutoState) {
+        case AutoState::Idle:           idleMotors();                    break;
+        case AutoState::Accelerate:     accelerateMotors();              break;
+        case AutoState::PIDLoop:        pidMotors();                     break;
+        // case AutoState::Left:        turnMotorLeft();                break;
+        // case AutoState::Right:       turnMotorRight();               break;
+        case AutoState::LineFinish:     lineFinish();                    break;
+        case AutoState::Stop:           stopMotors();                    break;
+        default:            Serial.println("ERROR: Default case");       break;
+    }
+}
+
+void onAutoStateChange(AutoState newState) {
+    stateEntryTimer = currentTime;
+    previousAutoState = newState;
+    currentAutoState = newState;
+
+    Serial.print("Auto state -> ");
+
+
+    switch(newState) {
+        case AutoState::PIDLoop:
+            lastError = 0;
+            break;
+        case AutoState::Accelerate:
+            motorInputSignal = 0;
+            break;
+        default:
+            break;
+    }
+}
+
+void idleMotors() {
+    setMotorSpeed(MotorPatterns::idle);
+}
+
+void stopMotors() {
+    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
+        onAutoStateChange(AutoState::Accelerate);
+    } else {
+        setMotorSpeed(MotorPatterns::stop);
+    }
+}
+
+void accelerateMotors() {
+    // Static timer for acceleration.
+    static unsigned long accelerationTimer = 0;
+
+    bool digitalIRFlag = readDigitalSensors();
+    // The digital IR Flag here ensures the robot has accelerated past the black line so we don't
+    // have any funny behaviour with the sensors.
+    // if ((motorInputSignal >= SET_SPEED) && !digitalIRFlag) {
+    if (motorInputSignal >= SET_SPEED) {
+        onAutoStateChange(AutoState::PIDLoop);
+        return;
+    }
+
+    // Increment the speed according to the delay while the motor is less than the set speed.
+    if ((currentTime - accelerationTimer) >= ACCELERATION_INTERVAL && motorInputSignal < SET_SPEED) {
+        motorInputSignal += PWM_LEVEL_INCREMENT;
+        setMotorSpeed({.leftA = motorInputSignal, .leftB = 0,
+                       .rightA = motorInputSignal, .rightB = 0});
+        accelerationTimer = currentTime;
+    }
+}
+
+void pidMotors() {
+    // Check if the digital pins are active before doing anything else.
+    bool digitalIRFlag = readDigitalSensors();
+
+    int error = SETPOINT - linePosition;
+    if (abs(error) < DEADBAND_ERROR) error = 0;        // deadband.
+    float adjust = (error * PIDGains::Kp) + (PIDGains::Kd * (error - lastError));
+
+    // if (linePosition > SHARP_LEFT_THR) {
+    //     setMotorSpeed({TURN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED});
+    //     return;
+    // }
+
+    // if (linePosition < SHARP_RIGHT_THR) {
+    //     setMotorSpeed({MIN_SPEED, MIN_SPEED, TURN_SPEED, MIN_SPEED});
+    //     return;
+    // }
+
+    // Set the motor speed based on the adjustment.
+    int leftSpeed = SET_SPEED - adjust;
+    int rightSpeed = SET_SPEED + adjust;
+
+    setMotorSpeed({leftSpeed, MIN_SPEED, rightSpeed, MIN_SPEED});
+    lastError = error;
+}
+
+void lineFinish() {
+    // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
+    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
+        onAutoStateChange(AutoState::PIDLoop);
+    } else {
+        setMotorSpeed(MotorPatterns::right);
+    }
+}
+
+void turnMotors() {
+    // rotate robot in place
+    setMotorSpeed(MotorPatterns::right);
+
+    // stop when ANY sensor sees the line again
+    if (!readDigitalSensors()) {
+        onAutoStateChange(AutoState::PIDLoop);
+        return;
+    }
+}
+
+void turnMotorLeft() {
+    setMotorSpeed(MotorPatterns::left);
+
+    if (linePosition < SHARP_LEFT_THR) {
+        onAutoStateChange(AutoState::PIDLoop);
+        return;
+    }
+}
+
+void turnMotorRight() {
+    setMotorSpeed(MotorPatterns::right);
+
+    if (linePosition > SHARP_RIGHT_THR) {
+        onAutoStateChange(AutoState::PIDLoop);
+        return;
+    }
+}
+
+// ------------ COMMS LAYER ---------
 
 void startBLEModule() {
     // Strictly speaking this would be necessary if the BLE was external and the Arduino didn't come with an ESP32.
@@ -172,24 +381,18 @@ void startBLEModule() {
 }
 
 void monitorBLE() {
-
- BLEDevice central = BLE.central();   // Check for connection or disconnection
-
+     BLEDevice central = BLE.central();   // Check for connection or disconnection
     // Checks the central has started correctly and that we are connected.
-    if (central) {
-        if (central.connected()) {
+    if (!central) return;
+    if (central.connected()) return;
 
-            // Check if command has been written.
-            if (terminalCharacteristic.written()) {
-
-                char msg = terminalCharacteristic.value();
-                Serial.print("BLE command: ");
-                Serial.println(msg);
-
-                // Separate message parsing module as this fucntion is already triple nested.
-                parseBLEMessage(msg);
-            }
-        }
+    // Check if command has been written.
+    if (terminalCharacteristic.written()) {
+        char msg = terminalCharacteristic.value();
+        Serial.print("BLE command: ");
+        Serial.println(msg);
+        // Separate message parsing module as this fucntion is already triple nested.
+        parseBLEMessage(msg);
     }
 }
 
@@ -197,7 +400,6 @@ void writeToBLE(const String &msg) {
     debugCharacteristic.writeValue(msg + "\n");
 }
 
-// 
 void parseBLEMessage(char msg) {
     // Ensure always lower case to cut down on switch cases.
     switch (tolower(msg)) {
@@ -205,61 +407,60 @@ void parseBLEMessage(char msg) {
             manualMode = true;
             autoMode = false;
             writeToBLE("Switched to MANUAL mode (BLE)");
-            currentManualState = MANUAL_IDLE;
+            currentManualState = ManualState::Idle;
             break;
 
         case 'a':
             manualMode = false;
             autoMode = true;
             writeToBLE("Switched to AUTO mode (BLE)");
-            currentAutoState = IDLE;
-            previousAutoState = IDLE;
+            onAutoStateChange(AutoState::Idle);
             break;
 
         case 'f':
             if (manualMode) {
-                if (currentManualState == MANUAL_FORWARD) {
+                if (currentManualState == ManualState::Forward) {
                     writeToBLE("Forward stopped");
-                    currentManualState = MANUAL_STOP;
+                    currentManualState = ManualState::Stop;
                 } else {
                     writeToBLE("Forward command");
-                    currentManualState = MANUAL_FORWARD;
+                    currentManualState = ManualState::Forward;
                 }
             }
             break;
 
         case 'b':
             if (manualMode) {
-                if (currentManualState == MANUAL_BACKWARDS) {
+                if (currentManualState == ManualState::Backwards) {
                     writeToBLE("Backwards stopped");
-                    currentManualState = MANUAL_STOP;
+                    currentManualState = ManualState::Stop;
                 } else {
                     writeToBLE("Backwards command");
-                    currentManualState = MANUAL_BACKWARDS;
+                    currentManualState = ManualState::Backwards;
                 }
             }
             break;
 
         case 'r':
             if (manualMode) {
-                if (currentManualState == MANUAL_RIGHT) {
+                if (currentManualState == ManualState::Right) {
                     writeToBLE("Turning right stopped");
-                    currentManualState = MANUAL_STOP;
+                    currentManualState = ManualState::Stop;
                 } else {
                     writeToBLE("Turning right");
-                    currentManualState = MANUAL_RIGHT;
+                    currentManualState = ManualState::Right;
                 }
             }
             break;
 
         case 'l':
             if (manualMode){
-                if (currentManualState == MANUAL_LEFT) {
+                if (currentManualState == ManualState::Left) {
                     writeToBLE("Turning left stopped");
-                    currentManualState = MANUAL_STOP;
+                    currentManualState = ManualState::Stop;
                 } else {
                     writeToBLE("Turning left");
-                    currentManualState = MANUAL_LEFT;
+                    currentManualState = ManualState::Left;
                 }
             }
             break;
@@ -274,27 +475,8 @@ void parseBLEMessage(char msg) {
         }
         default:
             writeToBLE("Unknown BLE cmd");
-            currentManualState = MANUAL_IDLE;
+            currentManualState = ManualState::Idle;
     }
-}
-
-// Read the analog sensor values into an array.
-void readAnalogSensors() {
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        sensorArrValues[i] = analogRead(AN_SENSOR_PINS[i]);
-    };
-}
-
-// This function is only here to tell us when all the sensors are false at the end of the course.
-bool readDigitalSensors() {
-    bool digSensorArray[AN_SENSOR_COUNT];
-    bool digitalIRFlag;
-
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        digSensorArray[i] = digitalRead(DIG_SENSOR_PINS[i]);
-    }
-    // Sensor logic was devised using inverted logic for some reason.
-    return (!digSensorArray[0] && !digSensorArray[1] && !digSensorArray[2]);
 }
 
 // void calibrateSensors() {
@@ -341,160 +523,8 @@ bool readDigitalSensors() {
 // }
 
 // Accept the struct and constrain the values between 0 and 250;
-void setMotorSpeed(const MotorSpeeds &speed) {
-    analogWrite(MOTOR_2A_PIN, constrain(speed.leftA, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_2B_PIN, constrain(speed.leftB, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_1A_PIN, constrain(speed.rightA, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_1B_PIN, constrain(speed.rightB, MIN_SPEED, MAX_SPEED));
-}
 
-void manualStateMachine() {
-    switch (currentManualState) {
-        case MANUAL_IDLE:       setMotorSpeed(MotorPatterns::idle);         break;
-        case MANUAL_FORWARD:    setMotorSpeed(MotorPatterns::forward);      break;
-        case MANUAL_BACKWARDS:  setMotorSpeed(MotorPatterns::backward);     break;
-        case MANUAL_RIGHT:      setMotorSpeed(MotorPatterns::right);        break;
-        case MANUAL_LEFT:       setMotorSpeed(MotorPatterns::left);         break;
-        case MANUAL_STOP:       setMotorSpeed(MotorPatterns::stop);         break;
-        default:                Serial.println("ERROR: Default case");      break;
-    }
-}
+
 
 /* In the automatic state machine, we break the behaviour out more explicitly into helper functions as they require timers for each
 state, this can get quite messy nested within the switch statement, so it's easier to read if we just separate them.*/
-void autoStateMachine() {
-    switch (currentAutoState) {
-        case IDLE:          idleMotors();                               break;
-        case ACCELERATE:    accelerateMotors();                         break;
-        case PID_LOOP:      pidMotors();                                break;
-        // case TURN_LEFT:     turnMotorLeft();         break;
-        // case TURN_RIGHT:    turnMotorRight();        break;
-        case LINE_FINISH:   lineFinish();                               break;
-        case STOP:          stopMotors();                               break;
-        default:            Serial.println("ERROR: Default case");      break;
-    }
-}
-
-void idleMotors() {
-    if ((currentTime - stateEntryTimer) > WAIT_TIME) {
-        currentAutoState = ACCELERATE;
-    }
-    setMotorSpeed(MotorPatterns::idle);
-}
-
-void stopMotors() {
-    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
-        currentAutoState = ACCELERATE;
-    } else {
-        setMotorSpeed(MotorPatterns::stop);
-    }
-}
-
-void accelerateMotors() {
-    // Static timer for acceleration.
-    static unsigned long accelerationTimer = 0;
-
-    bool digitalIRFlag = readDigitalSensors();
-    // The digital IR Flag here ensures the robot has accelerated past the black line so we don't
-    // have any funny behaviour with the sensors.
-    // if ((motorInputSignal >= SET_SPEED) && !digitalIRFlag) {
-    if (motorInputSignal >= SET_SPEED) {
-        currentAutoState = PID_LOOP;
-        return;
-    }
-
-    // Increment the speed according to the delay while the motor is less than the set speed.
-    if ((currentTime - accelerationTimer) >= ACCELERATION_INTERVAL && motorInputSignal < SET_SPEED) {
-        motorInputSignal += PWM_LEVEL_INCREMENT;
-        setMotorSpeed({.leftA = motorInputSignal, .leftB = 0,
-                       .rightA = motorInputSignal, .rightB = 0});
-        accelerationTimer = currentTime;
-    }
-}
-
-// Calculate the weighted line position from the analog sensors.
-void calculateLinePosition() {
-    int weightedSum = 0;
-    int sum = 0;
-
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        int reading = sensorArrValues[i];
-        weightedSum += reading * i * SCALING_FACTOR;
-        sum += reading;
-    }
-
-    if (sum == 0) {
-        linePosition = SETPOINT;
-    }
-
-    linePosition = weightedSum / sum;
-}
-
-void pidMotors() {
-    /* Initial value calculation: MAX SPEED VALUE (60) / MAX ERROR (2000) = KP
-    Go down in value by 0.01 to check behaviour, then go up and try again. */
-    constexpr float KP = 0.08;
-    constexpr float KD = 0;
-
-    // Check if the digital pins are active before doing anything else.
-    bool digitalIRFlag = readDigitalSensors();
-
-    // Read in the current line position and adjust the error.
-    int error = SETPOINT - linePosition;
-    float adjust = (error * KP) + (KD * (error - lastError));
-
-    // if (linePosition > SHARP_LEFT_THR) {
-    //     setMotorSpeed({TURN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED});
-    //     return;
-    // }
-
-    // if (linePosition < SHARP_RIGHT_THR) {
-    //     setMotorSpeed({MIN_SPEED, MIN_SPEED, TURN_SPEED, MIN_SPEED});
-    //     return;
-    // }
-
-    // Set the motor speed based on the adjustment.
-    int leftSpeed = SET_SPEED - adjust;
-    int rightSpeed = SET_SPEED + adjust;
-
-    setMotorSpeed({leftSpeed, MIN_SPEED, rightSpeed, MIN_SPEED});
-    lastError = error;
-}
-
-void lineFinish() {
-    // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
-    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
-        currentAutoState = ACCELERATE;
-    } else {
-        setMotorSpeed(MotorPatterns::right);
-    }
-}
-
-void turnMotors() {
-    // rotate robot in place
-    setMotorSpeed(MotorPatterns::right);
-
-    // stop when ANY sensor sees the line again
-    if (!readDigitalSensors()) {
-        currentAutoState = ACCELERATE;
-        return;
-    }
-}
-
-void turnMotorLeft() {
-    setMotorSpeed(MotorPatterns::left);
-
-    if (linePosition < SHARP_LEFT_THR) {
-        currentAutoState = PID_LOOP;
-        return;
-    }
-}
-
-void turnMotorRight() {
-    setMotorSpeed(MotorPatterns::right);
-
-    if (linePosition > SHARP_RIGHT_THR) {
-        currentAutoState = PID_LOOP;
-        return;
-    }
-}
