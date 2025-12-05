@@ -7,7 +7,7 @@ constexpr byte MOTOR_1A_PIN = 5;
 constexpr byte MOTOR_1B_PIN = 6;
 constexpr byte MOTOR_2A_PIN = 9;
 constexpr byte MOTOR_2B_PIN = 10;
-constexpr byte AN_SENSOR_PINS[] = {A3, A0, A1, A2, A4};
+constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4};
 constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / sizeof(AN_SENSOR_PINS[0]);
 constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4}; // There is no digital sensor count as we assume there is 1 digital for every 1 analog pin.
 
@@ -65,7 +65,7 @@ namespace MotorPatterns {
     constexpr MotorSpeeds backward  = {MIN_SPEED, SET_SPEED, MIN_SPEED, SET_SPEED};
     constexpr MotorSpeeds right     = {TURN_SPEED, MIN_SPEED, MIN_SPEED, TURN_SPEED};
     constexpr MotorSpeeds left      = {MIN_SPEED, TURN_SPEED, TURN_SPEED, MIN_SPEED};
-    constexpr MotorSpeeds stop      = {1, 1, 1, 1};     // Set theses to 1 to draw the least amount of power.
+    constexpr MotorSpeeds stop      = {1, 1, 1, 1};     // Set theses to 1 to draw the least amount of power for braking.
 }
 
 // --------- Global variables ----------
@@ -367,8 +367,8 @@ void autoStateMachine() {
         case IDLE:          idleMotors();                               break;
         case ACCELERATE:    accelerateMotors();                         break;
         case PID_LOOP:      pidMotors();                                break;
-        case TURN_LEFT:     turnMotorLeft();         break;
-        case TURN_RIGHT:    turnMotorRight();        break;
+        // case TURN_LEFT:     turnMotorLeft();         break;
+        // case TURN_RIGHT:    turnMotorRight();        break;
         case LINE_FINISH:   lineFinish();                               break;
         case STOP:          stopMotors();                               break;
         default:            Serial.println("ERROR: Default case");      break;
@@ -433,7 +433,7 @@ void calculateLinePosition() {
 void pidMotors() {
     /* Initial value calculation: MAX SPEED VALUE (60) / MAX ERROR (2000) = KP
     Go down in value by 0.01 to check behaviour, then go up and try again. */
-    constexpr float KP = 0.7;
+    constexpr float KP = 0.08;
     constexpr float KD = 0;
 
     // Check if the digital pins are active before doing anything else.
