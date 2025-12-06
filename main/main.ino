@@ -20,7 +20,7 @@ constexpr byte PWM_LEVEL_INCREMENT = 5;
 constexpr byte ACCELERATION_INTERVAL = 5;
 constexpr unsigned int TURN_DURATION = 1000;
 constexpr unsigned int MOTOR_OFFSET = 12;
-constexpr unsigned int SET_SPEED = 100;
+constexpr unsigned int SET_SPEED = 60;
 constexpr unsigned int TURN_SPEED = 100;
 constexpr unsigned int SCALING_FACTOR = 1000;
 constexpr unsigned int SETPOINT = 2000;
@@ -70,8 +70,8 @@ namespace MotorPatterns {
 }
 
 namespace PIDGains {
-    constexpr float Kp = 0.80f;
-    constexpr float Kd = 0.01f;
+    constexpr float Kp = 0.22f;
+    constexpr float Kd = 0.02f;
 }
 
 // --------- Global variables ----------
