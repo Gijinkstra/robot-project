@@ -29,6 +29,7 @@ constexpr unsigned int SETPOINT = 2000;
 constexpr unsigned int SHARP_LEFT_THR = 3000;
 constexpr unsigned int SHARP_RIGHT_THR = 1000;
 constexpr unsigned int DEADBAND_ERROR = 20;
+constexpr unsigned int WAIT_TIME = 300;
 
 // --------- Control Types ---------------
 enum class AutoState {
@@ -36,8 +37,8 @@ enum class AutoState {
     Accelerate,
     PIDLoop,
     Stop,
-    TurnLeft,
-    TurnRight,
+    HardLeft,
+    HardRight,
     LineFinish
 };
 
@@ -146,7 +147,7 @@ class LineSensors {
 
             bool allDigitalOff() {
                 for (byte i = 0; i < digitalCount; ++i) {
-                    if (digitalRead(digitalPins[i])) {
+                    if (digitalValues[i]) {
                         // if any are "on", then not all off
                         return false;
                     }
@@ -189,8 +190,8 @@ class LineSensors {
 
 class RobotController {
 public:
-    RobotController(MotorDriver &motors)
-        : motors(motors) {}
+    RobotController(MotorDriver &motors, LineSensors &sensors)
+        : motors(motors), sensors(sensors) {}
 
     void setManualMode() {
         manualMode = true;
@@ -205,8 +206,18 @@ public:
         previousAutoState = AutoState::Accelerate;
     }
 
+    bool isManualMode() const { return manualMode; }
+    bool isAutoMode() const { return autoMode; }
+    ManualState getManualState() const { return currentManualState; }
+    ManualState setManualState(ManualState s) { currentManualState = s; }
+    AutoState getAutoState() const { return currentAutoState; }
+
     void update(unsigned long now) {
         currentTime = now;
+
+        sensors.readAnalog();
+        sensors.readDigital();
+        sensors.computeLinePosition();
 
         if (!manualMode && !autoMode) {
             motors.idle();
@@ -223,34 +234,35 @@ public:
 private:
     void updateManual() {
         switch (currentManualState) {
-            case ManualState::Idle:      motors.idle();     break;
-            case ManualState::Forward:   motors.forward();  break;
-            case ManualState::Backwards: motors.backward(); break;
-            case ManualState::Left:      motors.left();     break;
-            case ManualState::Right:     motors.right();    break;
-            case ManualState::Stop:      motors.stop();     break;
-            default:                                        break;
+            case ManualState::Idle:      motors.idle();         break;
+            case ManualState::Forward:   motors.forward();      break;
+            case ManualState::Backwards: motors.backward();     break;
+            case ManualState::Left:      motors.left();         break;
+            case ManualState::Right:     motors.right();        break;
+            case ManualState::Stop:      motors.stop();         break;
+            default:                                            break;
         }
     }
 
     void updateAuto() {
         switch (currentAutoState) {
-            case AutoState::Idle:        stateIdle();       break;
-            case AutoState::Accelerate:  stateAccelerate(); break;
-            case AutoState::PIDLoop:     statePIDLoop();    break;
-            case AutoState::LineFinish:  stateLineFinish(); break;
-            case AutoState::Stop:        stateStop();       break;
-            default:                                        break;
+            case AutoState::Idle:        stateIdle();           break;
+            case AutoState::Accelerate:  stateAccelerate();     break;
+            case AutoState::PIDLoop:     statePIDLoop();        break;
+            case AutoState::HardLeft:    stateHardLeft();       break;
+            case AutoState::HardRight:   stateHardRight();      break;
+            case AutoState::LineFinish:  stateLineFinish();     break;
+            case AutoState::Stop:        stateStop();           break;
+            default:                                            break;
         }
     }
 
     void onAutoStateChange(AutoState newState) {
-        stateEntryTimer = currentTime;
+        stateEntryTime = currentTime;
         previousAutoState = currentAutoState;
         currentAutoState = newState;
 
-        Serial.print("Auto state -> ");
-
+        Serial.print("Auto state -> "); Serial.println((int)newState);
 
         switch(newState) {
             case AutoState::PIDLoop:
@@ -266,22 +278,106 @@ private:
 
     void stateIdle() {
         motors.idle();
-
         if ((currentTime - stateEntryTime) > WAIT_TIME) {
             onAutoStateChange(AutoState::Accelerate);
         }
     }
 
+    void stateStop() {
+        motors.stop();
+        if ((currentTime - stateEntryTime) > TURN_DURATION) {
+            onAutoStateChange(AutoState::Accelerate);
+        }
+    }
+
     void stateAccelerate() {
-        
+        // Static timer for acceleration.
+        static unsigned long accelerationTimer = 0;
+
+        bool digitalIRFlag = sensors.allDigitalOff();
+
+        if (motorInputSignal >= SET_SPEED) {
+            onAutoStateChange(AutoState::PIDLoop);
+            return;
+        }
+
+        // Increment the speed according to the delay while the motor is less than the set speed.
+        if ((currentTime - accelerationTimer) >= 
+             ACCELERATION_INTERVAL && motorInputSignal < SET_SPEED) {
+
+                motorInputSignal += PWM_LEVEL_INCREMENT;
+
+                MotorSpeeds speeds{
+                    motorInputSignal, MIN_SPEED,
+                    motorInputSignal, MIN_SPEED,
+                };
+
+                motors.setSpeed(speeds);
+                accelerationTimer = currentTime;
+        }
     }
 
     void statePIDLoop() {
-        // compute PID, then motors.setSpeeds(...)
+        // Check if the digital pins are active before doing anything else.
+        bool digitalIRFlag = sensors.allDigitalOff();
+
+        int error = (int)SETPOINT - (int)sensors.linePosition();
+        if (abs(error) < (int)DEADBAND_ERROR) error = 0;        // deadband.
+
+        float adjust = (error * PIDGains::Kp)
+                     + (PIDGains::Kd * (error - lastError));
+
+        int leftSpeed = SET_SPEED - (int)adjust;
+        int rightSpeed = SET_SPEED + (int)adjust;
+        // if (linePosition > SHARP_LEFT_THR) {
+        //     setMotorSpeed({TURN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED});
+        //     return;
+        // }
+
+        // if (linePosition < SHARP_RIGHT_THR) {
+        //     setMotorSpeed({MIN_SPEED, MIN_SPEED, TURN_SPEED, MIN_SPEED});
+        //     return;
+        // }
+
+        // Set the motor speed based on the adjustment.
+
+        MotorSpeeds speeds{
+            leftSpeed, MIN_SPEED,
+            rightSpeed, MIN_SPEED,
+        };
+        motors.setSpeed(speeds);
+        lastError = error;
     }
+
+    void stateLineFinish() {
+        // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
+        if ((currentTime - stateEntryTime) > TURN_DURATION) {
+            onAutoStateChange(AutoState::PIDLoop);
+        } else {
+            motors.right();
+        }
+    }
+
+    void stateHardLeft() {
+        motors.left();
+        if (sensors.linePosition() < SHARP_LEFT_THR) {
+            onAutoStateChange(AutoState::PIDLoop);
+            return;
+        }
+    }
+
+    void stateHardRight() {
+        motors.right();
+        if (sensors.linePosition() > SHARP_RIGHT_THR) {
+            onAutoStateChange(AutoState::PIDLoop);
+            return;
+        }
+    }
+
 
     // Members
     MotorDriver &motors;
+    LineSensors &sensors;
 
     bool manualMode = false;
     bool autoMode   = false;
@@ -297,162 +393,46 @@ private:
     int lastError = 0;
 };
 
-// --------- Global variables ----------
-unsigned long stateEntryTimer;
-unsigned long currentTime;
-
-int motorInputSignal = 0;
-int lastError = 0;
-unsigned int linePosition;
-bool manualMode = false;
-bool autoMode = false;
-
-AutoState currentAutoState = AutoState::Idle;
-AutoState previousAutoState = AutoState::Idle;
-ManualState currentManualState = ManualState::Idle;
-
-int sensorArrMax[AN_SENSOR_COUNT];
-int sensorArrMin[AN_SENSOR_COUNT];
-int sensorArrValues[AN_SENSOR_COUNT];
+// ---------- Constructors --------------
+MotorDriver     motors(MOTOR_PINS);
+LineSensors     sensors(AN_SENSOR_PINS, AN_SENSOR_COUNT,
+                        DIG_SENSOR_PINS, DIG_SENSOR_COUNT);
+RobotController robot(motors, sensors);
 
 // ---------- BLE Service --------------
 BLEService terminalService("19B10010-E8F2-537E-4F6C-D104768A1214");
 BLECharCharacteristic terminalCharacteristic("19B10011-E8F2-537E-4F6C-D104768A1214", BLERead | BLEWrite);
 BLEStringCharacteristic debugCharacteristic("19B10011-E8F2-537E-4F6C-D104768A1215", BLERead | BLENotify, 64);
 
-// ------------ HARDWARE LAYER ---------
-void initHardware();
-void setMotorSpeed(const MotorSpeeds &speed);
-void readAnalogSensors();
-bool readDigitalSensors();
-unsigned int calculateLinePosition();
-
-// ------------ CONTROL LAYER ----------
-void manualStateMachine();
-void autoStateMachine();
-void idleMotors();
-void accelerateMotors();
-void lineFinish();
-void turnMotors();
-void turnMotorLeft();
-void turnMotorRight();
-void stopMotors();
-void pidMotors();
-
 // ------------ COMMS LAYER ----------
 void startBLEModule();
-void monitorBLE();
-void parseBLEMessage(char msg);
+void monitorBLE(RobotController &robot);
+void parseBLEMessage(RobotController &robot, char msg);
 void writeToBLE(const String &msg);
 
 void setup() {
-    initHardware();
+    Serial.begin(BAUD_RATE);
+    motors.init();
+    sensors.init();
     startBLEModule();
 }
 
 void loop() {
-    currentTime = millis();
+    unsigned long now = millis();
 
-    readAnalogSensors();
-    monitorBLE();
-    
-    if (!manualMode && !autoMode) {
-        setMotorSpeed(MotorPatterns::idle);
-    }
-    
-    if (manualMode) {
-        manualStateMachine();
-    } else if (autoMode) {
-        autoStateMachine();
-    }
-
+    monitorBLE(robot);
+    robot.update(now);
     // ****************** DEBUGGING - REMOVE *****************************
-    readDigitalSensors();
-    Serial.print("Line position: "); Serial.println(linePosition);
+    Serial.print("Line position: "); Serial.println(sensors.linePosition());
 
-    char serialPrint[30];
     // Serial.println("Output flag: " + String(digitalIRFlag));
     for (int i = 0; i < AN_SENSOR_COUNT; i++) {
-        sprintf(serialPrint, "Sensor %d value: %d", i, sensorArrValues[i]);
-        Serial.println(serialPrint);
+        Serial.print("Sensor "); Serial.print(i);
+        Serial.print(": "); Serial.println(sensors.getAnalogReading(i));
     }
 }
 
 // ------------ HARDWARE LAYER ---------
-void initHardware() {
-    Serial.begin(BAUD_RATE);
-    for (byte i = 0; i < MOTOR_PIN_COUNT; i++) {
-        pinMode(MOTOR_PINS[i], OUTPUT);
-    }
-
-    // Allows scaling of the pins easily.
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        pinMode(AN_SENSOR_PINS[i], INPUT);
-        pinMode(DIG_SENSOR_PINS[i], INPUT);
-    }
-}
-
-void readAnalogSensors() {
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        sensorArrValues[i] = analogRead(AN_SENSOR_PINS[i]);
-    }
-}
-
-bool readDigitalSensors() {
-    bool digSensorArray[AN_SENSOR_COUNT];
-
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        digSensorArray[i] = digitalRead(DIG_SENSOR_PINS[i]);
-    }
-    // Sensor logic was devised using inverted logic for some reason.
-    return (!digSensorArray[0] && !digSensorArray[1] && !digSensorArray[2]);
-}
-
-unsigned int calculateLinePosition() {
-    long weightedSum = 0;
-    int sum = 0;
-
-    for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
-        int reading = sensorArrValues[i];
-        weightedSum += reading * i * SCALING_FACTOR;
-        sum += reading;
-    }
-
-    if (sum == 0) {
-        linePosition = SETPOINT;
-        return;
-    }
-
-    linePosition = weightedSum / sum;
-    return linePosition;
-}
-
-// ------------ CONTROL LAYER ---------
-
-void manualStateMachine() {
-    switch (currentManualState) {
-        case ManualState::Idle:       setMotorSpeed(MotorPatterns::idle);         break;
-        case ManualState::Forward:    setMotorSpeed(MotorPatterns::forward);      break;
-        case ManualState::Backwards:  setMotorSpeed(MotorPatterns::backward);     break;
-        case ManualState::Right:      setMotorSpeed(MotorPatterns::right);        break;
-        case ManualState::Left:       setMotorSpeed(MotorPatterns::left);         break;
-        case ManualState::Stop:       setMotorSpeed(MotorPatterns::stop);         break;
-        default:                      Serial.println("ERROR: Default case");      break;
-    }
-}
-
-void autoStateMachine() {
-    switch (currentAutoState) {
-        case AutoState::Idle:           idleMotors();                    break;
-        case AutoState::Accelerate:     accelerateMotors();              break;
-        case AutoState::PIDLoop:        pidMotors();                     break;
-        // case AutoState::Left:        turnMotorLeft();                break;
-        // case AutoState::Right:       turnMotorRight();               break;
-        case AutoState::LineFinish:     lineFinish();                    break;
-        case AutoState::Stop:           stopMotors();                    break;
-        default:            Serial.println("ERROR: Default case");       break;
-    }
-}
 
 
 
@@ -480,7 +460,7 @@ void startBLEModule() {
     BLE.advertise();
 }
 
-void monitorBLE() {
+void monitorBLE(RobotController &robot) {
      BLEDevice central = BLE.central();   // Check for connection or disconnection
     // Checks the central has started correctly and that we are connected.
     if (!central) return;
@@ -492,7 +472,7 @@ void monitorBLE() {
         Serial.print("BLE command: ");
         Serial.println(msg);
         // Separate message parsing module as this fucntion is already triple nested.
-        parseBLEMessage(msg);
+        parseBLEMessage(robot, msg);
     }
 }
 
@@ -504,70 +484,66 @@ void parseBLEMessage(char msg) {
     // Ensure always lower case to cut down on switch cases.
     switch (tolower(msg)) {
         case 'm':
-            manualMode = true;
-            autoMode = false;
+            robot.setManualMode();
             writeToBLE("Switched to MANUAL mode (BLE)");
-            currentManualState = ManualState::Idle;
             break;
 
         case 'a':
-            manualMode = false;
-            autoMode = true;
+            robot.setAutoMode();
             writeToBLE("Switched to AUTO mode (BLE)");
-            onAutoStateChange(AutoState::Idle);
             break;
 
         case 'f':
-            if (manualMode) {
-                if (currentManualState == ManualState::Forward) {
+            if (robot.isManualMode()) {
+                if (robot.getManualState() == ManualState::Forward) {
+                    robot.setManualState(ManualState::Stop);
                     writeToBLE("Forward stopped");
-                    currentManualState = ManualState::Stop;
                 } else {
                     writeToBLE("Forward command");
-                    currentManualState = ManualState::Forward;
+                    robot.setManualState(ManualState::Stop);
                 }
             }
             break;
 
         case 'b':
-            if (manualMode) {
-                if (currentManualState == ManualState::Backwards) {
+            if (robot.isManualMode()) {
+                if (robot.getManualState() == ManualState::Backwards) {
+                    robot.setManualState(ManualState::Stop);
                     writeToBLE("Backwards stopped");
-                    currentManualState = ManualState::Stop;
                 } else {
+                    robot.setManualState(ManualState::Backwards);
                     writeToBLE("Backwards command");
-                    currentManualState = ManualState::Backwards;
                 }
             }
             break;
 
         case 'r':
-            if (manualMode) {
-                if (currentManualState == ManualState::Right) {
+            if (robot.isManualMode()) {
+                if (robot.getManualState() == ManualState::Right) {
+                    robot.setManualState(ManualState::Stop);
                     writeToBLE("Turning right stopped");
-                    currentManualState = ManualState::Stop;
                 } else {
+                    robot.setManualState(ManualState::Right);
                     writeToBLE("Turning right");
-                    currentManualState = ManualState::Right;
                 }
             }
             break;
 
         case 'l':
-            if (manualMode){
-                if (currentManualState == ManualState::Left) {
+            if (robot.isManualMode()){
+                if (robot.getManualState() == ManualState::Left) {
+                    robot.setManualState(ManualState::Stop);
                     writeToBLE("Turning left stopped");
-                    currentManualState = ManualState::Stop;
                 } else {
+                    robot.setManualState(ManualState::Left);
                     writeToBLE("Turning left");
-                    currentManualState = ManualState::Left;
                 }
             }
             break;
 
         case 'c':
         // Do not allow sensor calibration outside of idle state.
-        if (!manualMode && !autoMode) {
+        if (!robot.isManualMode() && !robot.isAutoMode()) {
             writeToBLE("Starting calibration...");
             // calibrateSensors();
             writeToBLE("Calibration completed.");
@@ -575,7 +551,7 @@ void parseBLEMessage(char msg) {
         }
         default:
             writeToBLE("Unknown BLE cmd");
-            currentManualState = ManualState::Idle;
+            robot.setManualState(ManualState::Idle);
     }
 }
 
