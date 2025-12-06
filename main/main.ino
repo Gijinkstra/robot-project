@@ -8,7 +8,9 @@ constexpr byte MOTOR_PIN_COUNT = sizeof(MOTOR_PINS) /
                                  sizeof(MOTOR_PINS[0]);
 constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / 
                                  sizeof(AN_SENSOR_PINS[0]);
-constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4}; 
+constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4};
+constexpr byte DIG_SENSOR_COUNT = sizeof(DIG_SENSOR_PINS) / 
+                                 sizeof(DIG_SENSOR_PINS[0]);
 constexpr unsigned int MIN_SPEED = 0;
 constexpr unsigned int MAX_SPEED = 255;   
 constexpr unsigned int AN_SENSOR_MAX = 1023;
@@ -73,6 +75,227 @@ namespace PIDGains {
     constexpr float Kp = 0.80f;
     constexpr float Kd = 0.01f;
 }
+
+// Classes
+class MotorDriver {
+    public:
+        MotorDriver(const byte pins[MOTOR_PIN_COUNT]) {
+            for (byte i = 0; i < MOTOR_PIN_COUNT; i++) {
+                motorPins[i] = pins[i];
+            }
+        }
+
+        void init() {
+            for (byte i = 0; i < MOTOR_PIN_COUNT; i++) {
+                pinMode(motorPins[i], OUTPUT);
+            }
+        }
+
+        void setSpeed(const MotorSpeeds &speed) {
+            analogWrite(motorPins[0], constrain(speed.leftA, MIN_SPEED, MAX_SPEED));
+            analogWrite(motorPins[1], constrain(speed.leftB, MIN_SPEED, MAX_SPEED));
+            analogWrite(motorPins[2], constrain(speed.rightA, MIN_SPEED, MAX_SPEED));
+            analogWrite(motorPins[3], constrain(speed.rightB, MIN_SPEED, MAX_SPEED));
+        }
+
+        void idle()         { setSpeed(MotorPatterns::idle);        }
+        void forward()      { setSpeed(MotorPatterns::forward);     }
+        void backward()     { setSpeed(MotorPatterns::backward);    }
+        void left()         { setSpeed(MotorPatterns::left);        }
+        void right()        { setSpeed(MotorPatterns::right);       }
+        void stop()         { setSpeed(MotorPatterns::stop);        }
+    
+    private:
+        byte motorPins[4];
+};
+
+class LineSensors {
+    public:
+        LineSensors(const byte anPins[], byte anCount,
+                const byte digPins[], byte digCount)
+                : analogCount(anCount), digitalCount(digCount)
+            {
+                for (byte i = 0; i < analogCount; i++) {
+                    analogPins[i] = anPins[i];
+                }
+                for (byte i = 0; i < digCount; i++) {
+                    digitalPins[i] = digPins[i];
+                }
+            }
+
+            void init() {
+                for (byte i = 0; i < analogCount; i++) {
+                    pinMode(analogPins[i], INPUT);
+                }
+                for (byte i = 0; i < digitalCount; i++) {
+                    pinMode(digitalPins[i], INPUT);
+                }
+            }
+
+            void readAnalog() {
+                for (byte i = 0; i < analogCount; i++) {
+                    analogValues[i] = analogRead(analogPins[i]);
+                }
+            }
+
+            void readDigital() {
+                for (byte i = 0; i < digitalCount; i++) {
+                    digitalValues[i] = digitalRead(digitalPins[i]);
+                }
+            }
+
+            bool allDigitalOff() {
+                for (byte i = 0; i < digitalCount; ++i) {
+                    if (digitalRead(digitalPins[i])) {
+                        // if any are "on", then not all off
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            unsigned int computeLinePosition() {
+                long weightedSum = 0;
+                unsigned int sum = 0;
+
+                    for (byte i = 0; i < analogCount; ++i) {
+                        int reading = analogValues[i];
+                        weightedSum += (long)reading * i * SCALING_FACTOR;
+                        sum += reading;
+                    }
+
+                    if (sum == 0) {
+                        lastLinePosition = SETPOINT;
+                    } else {
+                        lastLinePosition = weightedSum / sum;
+                    }
+                    return lastLinePosition;
+            }
+
+            unsigned int linePosition() const { return lastLinePosition; }
+            int getAnalogReading(byte i) const { return analogValues[i]; }
+            bool getDigitalReading(byte i) const { return digitalValues[i]; }
+
+    private:
+        byte analogPins[AN_SENSOR_COUNT];
+        byte digitalPins[DIG_SENSOR_COUNT];
+        byte analogCount;
+        byte digitalCount;
+
+        int analogValues[AN_SENSOR_COUNT];
+        bool digitalValues[DIG_SENSOR_COUNT];
+        unsigned int lastLinePosition = SETPOINT;
+};
+
+class RobotController {
+public:
+    RobotController(MotorDriver &motors)
+        : motors(motors) {}
+
+    void setManualMode() {
+        manualMode = true;
+        autoMode   = false;
+        currentManualState = ManualState::Idle;
+    }
+
+    void setAutoMode() {
+        manualMode = false;
+        autoMode   = true;
+        currentAutoState = AutoState::Accelerate;
+        previousAutoState = AutoState::Accelerate;
+    }
+
+    void update(unsigned long now) {
+        currentTime = now;
+
+        if (!manualMode && !autoMode) {
+            motors.idle();
+            return;
+        }
+
+        if (manualMode) {
+            updateManual();
+        } else {
+            updateAuto();
+        }
+    }
+
+private:
+    void updateManual() {
+        switch (currentManualState) {
+            case ManualState::Idle:      motors.idle();     break;
+            case ManualState::Forward:   motors.forward();  break;
+            case ManualState::Backwards: motors.backward(); break;
+            case ManualState::Left:      motors.left();     break;
+            case ManualState::Right:     motors.right();    break;
+            case ManualState::Stop:      motors.stop();     break;
+            default:                                        break;
+        }
+    }
+
+    void updateAuto() {
+        switch (currentAutoState) {
+            case AutoState::Idle:        stateIdle();       break;
+            case AutoState::Accelerate:  stateAccelerate(); break;
+            case AutoState::PIDLoop:     statePIDLoop();    break;
+            case AutoState::LineFinish:  stateLineFinish(); break;
+            case AutoState::Stop:        stateStop();       break;
+            default:                                        break;
+        }
+    }
+
+    void onAutoStateChange(AutoState newState) {
+        stateEntryTimer = currentTime;
+        previousAutoState = currentAutoState;
+        currentAutoState = newState;
+
+        Serial.print("Auto state -> ");
+
+
+        switch(newState) {
+            case AutoState::PIDLoop:
+                lastError = 0;
+                break;
+            case AutoState::Accelerate:
+                motorInputSignal = 0;
+                break;
+            default:
+                break;
+        }
+    }
+
+    void stateIdle() {
+        motors.idle();
+
+        if ((currentTime - stateEntryTime) > WAIT_TIME) {
+            onAutoStateChange(AutoState::Accelerate);
+        }
+    }
+
+    void stateAccelerate() {
+        
+    }
+
+    void statePIDLoop() {
+        // compute PID, then motors.setSpeeds(...)
+    }
+
+    // Members
+    MotorDriver &motors;
+
+    bool manualMode = false;
+    bool autoMode   = false;
+
+    ManualState currentManualState = ManualState::Idle;
+    AutoState   currentAutoState   = AutoState::Idle;
+    AutoState   previousAutoState  = AutoState::Idle;
+
+    unsigned long currentTime = 0;
+    unsigned long stateEntryTime = 0;
+
+    int motorInputSignal = 0;
+    int lastError = 0;
+};
 
 // --------- Global variables ----------
 unsigned long stateEntryTimer;
@@ -169,13 +392,6 @@ void initHardware() {
     }
 }
 
-void setMotorSpeed(const MotorSpeeds &speed) {
-    analogWrite(MOTOR_PINS[0], constrain(speed.leftA, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_PINS[1], constrain(speed.leftB, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_PINS[2], constrain(speed.rightA, MIN_SPEED, MAX_SPEED));
-    analogWrite(MOTOR_PINS[3], constrain(speed.rightB, MIN_SPEED, MAX_SPEED));
-}
-
 void readAnalogSensors() {
     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
         sensorArrValues[i] = analogRead(AN_SENSOR_PINS[i]);
@@ -238,123 +454,8 @@ void autoStateMachine() {
     }
 }
 
-void onAutoStateChange(AutoState newState) {
-    stateEntryTimer = currentTime;
-    previousAutoState = newState;
-    currentAutoState = newState;
-
-    Serial.print("Auto state -> ");
 
 
-    switch(newState) {
-        case AutoState::PIDLoop:
-            lastError = 0;
-            break;
-        case AutoState::Accelerate:
-            motorInputSignal = 0;
-            break;
-        default:
-            break;
-    }
-}
-
-void idleMotors() {
-    setMotorSpeed(MotorPatterns::idle);
-}
-
-void stopMotors() {
-    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
-        onAutoStateChange(AutoState::Accelerate);
-    } else {
-        setMotorSpeed(MotorPatterns::stop);
-    }
-}
-
-void accelerateMotors() {
-    // Static timer for acceleration.
-    static unsigned long accelerationTimer = 0;
-
-    bool digitalIRFlag = readDigitalSensors();
-    // The digital IR Flag here ensures the robot has accelerated past the black line so we don't
-    // have any funny behaviour with the sensors.
-    // if ((motorInputSignal >= SET_SPEED) && !digitalIRFlag) {
-    if (motorInputSignal >= SET_SPEED) {
-        onAutoStateChange(AutoState::PIDLoop);
-        return;
-    }
-
-    // Increment the speed according to the delay while the motor is less than the set speed.
-    if ((currentTime - accelerationTimer) >= ACCELERATION_INTERVAL && motorInputSignal < SET_SPEED) {
-        motorInputSignal += PWM_LEVEL_INCREMENT;
-        setMotorSpeed({.leftA = motorInputSignal, .leftB = 0,
-                       .rightA = motorInputSignal, .rightB = 0});
-        accelerationTimer = currentTime;
-    }
-}
-
-void pidMotors() {
-    // Check if the digital pins are active before doing anything else.
-    bool digitalIRFlag = readDigitalSensors();
-
-    int error = SETPOINT - linePosition;
-    if (abs(error) < DEADBAND_ERROR) error = 0;        // deadband.
-    float adjust = (error * PIDGains::Kp) + (PIDGains::Kd * (error - lastError));
-
-    // if (linePosition > SHARP_LEFT_THR) {
-    //     setMotorSpeed({TURN_SPEED, MIN_SPEED, MIN_SPEED, MIN_SPEED});
-    //     return;
-    // }
-
-    // if (linePosition < SHARP_RIGHT_THR) {
-    //     setMotorSpeed({MIN_SPEED, MIN_SPEED, TURN_SPEED, MIN_SPEED});
-    //     return;
-    // }
-
-    // Set the motor speed based on the adjustment.
-    int leftSpeed = SET_SPEED - adjust;
-    int rightSpeed = SET_SPEED + adjust;
-
-    setMotorSpeed({leftSpeed, MIN_SPEED, rightSpeed, MIN_SPEED});
-    lastError = error;
-}
-
-void lineFinish() {
-    // Accelerate for a fixed time. Could also begin rotation and stop when all sensors light up again.
-    if ((currentTime - stateEntryTimer) > TURN_DURATION) {
-        onAutoStateChange(AutoState::PIDLoop);
-    } else {
-        setMotorSpeed(MotorPatterns::right);
-    }
-}
-
-void turnMotors() {
-    // rotate robot in place
-    setMotorSpeed(MotorPatterns::right);
-
-    // stop when ANY sensor sees the line again
-    if (!readDigitalSensors()) {
-        onAutoStateChange(AutoState::PIDLoop);
-        return;
-    }
-}
-
-void turnMotorLeft() {
-    setMotorSpeed(MotorPatterns::left);
-
-    if (linePosition < SHARP_LEFT_THR) {
-        onAutoStateChange(AutoState::PIDLoop);
-        return;
-    }
-}
-
-void turnMotorRight() {
-    setMotorSpeed(MotorPatterns::right);
-
-    if (linePosition > SHARP_RIGHT_THR) {
-        onAutoStateChange(AutoState::PIDLoop);
-        return;
-    }
-}
 
 // ------------ COMMS LAYER ---------
 
