@@ -8,6 +8,7 @@
             "intelliSenseMode": "gcc-arm",
             "includePath": [
                 "${workspaceFolder}/**",
+                "${workspaceFolder}/libs/**",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/hardware/renesas_uno/1.5.1/cores/arduino",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/hardware/renesas_uno/1.5.1/cores/arduino/api",
                 "C:/Users/ademp/AppData/Local/Arduino15/packages/arduino/hardware/renesas_uno/1.5.1/variants/UNOWIFIR4",
