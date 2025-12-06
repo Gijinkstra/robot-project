@@ -132,6 +132,7 @@ void loop() {
 
     readAnalogSensors();
     monitorBLE();
+    unsigned int linePosition = calculateLinePosition();
     
     if (!manualMode && !autoMode) {
         setMotorSpeed(MotorPatterns::idle);
@@ -144,7 +145,6 @@ void loop() {
     }
 
     // ****************** DEBUGGING - REMOVE *****************************
-    readDigitalSensors();
     Serial.print("Line position: "); Serial.println(linePosition);
 
     char serialPrint[30];
@@ -195,6 +195,7 @@ bool readDigitalSensors() {
 unsigned int calculateLinePosition() {
     long weightedSum = 0;
     int sum = 0;
+    unsigned int linePosition;
 
     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
         int reading = sensorArrValues[i];
@@ -204,7 +205,7 @@ unsigned int calculateLinePosition() {
 
     if (sum == 0) {
         linePosition = SETPOINT;
-        return;
+        return linePosition;
     }
 
     linePosition = weightedSum / sum;
@@ -383,7 +384,7 @@ void monitorBLE() {
      BLEDevice central = BLE.central();   // Check for connection or disconnection
     // Checks the central has started correctly and that we are connected.
     if (!central) return;
-    if (central.connected()) return;
+    if (!central.connected()) return;
 
     // Check if command has been written.
     if (terminalCharacteristic.written()) {
