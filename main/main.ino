@@ -70,7 +70,7 @@ namespace MotorPatterns {
 }
 
 namespace PIDGains {
-    constexpr float Kp = 0.8f;
+    constexpr float Kp = 0.80f;
     constexpr float Kd = 0.01f;
 }
 
@@ -184,7 +184,6 @@ void readAnalogSensors() {
 
 bool readDigitalSensors() {
     bool digSensorArray[AN_SENSOR_COUNT];
-    bool digitalIRFlag;
 
     for (byte i = 0; i < AN_SENSOR_COUNT; i++) {
         digSensorArray[i] = digitalRead(DIG_SENSOR_PINS[i]);
