@@ -73,7 +73,7 @@ void monitorBLE(RobotController &robot) {
      BLEDevice central = BLE.central();   // Check for connection or disconnection
     // Checks the central has started correctly and that we are connected.
     if (!central) return;
-    if (central.connected()) return;
+    if (!central.connected()) return;
 
     // Check if command has been written.
     if (terminalCharacteristic.written()) {
