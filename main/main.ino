@@ -33,7 +33,12 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
-    monitorBLE(robot);
+    static unsigned long lastBLECheck = 0;
+    if ((now - lastBLECheck) >= BLE_TIMER){
+        monitorBLE(robot);
+        lastBLECheck = now;
+    }
+
     robot.update(now);
     // ****************** DEBUGGING - REMOVE *****************************
     Serial.print("Line position: "); Serial.println(sensors.linePosition());
@@ -70,17 +75,27 @@ void startBLEModule() {
 }
 
 void monitorBLE(RobotController &robot) {
-     BLEDevice central = BLE.central();   // Check for connection or disconnection
+
+    BLE.poll();
+
+    static BLEDevice central;   // Check for connection or disconnection
     // Checks the central has started correctly and that we are connected.
-    if (!central) return;
-    if (!central.connected()) return;
+    if (!central) {
+        central = BLE.central();
+        if (central) {
+            writeToBLE("BLE central connected");
+        }
+        return;
+    }
+
+    if (!central.connected()) {
+        central = BLEDevice();
+    }
 
     // Check if command has been written.
     if (terminalCharacteristic.written()) {
         char msg = terminalCharacteristic.value();
-        Serial.print("BLE command: ");
-        Serial.println(msg);
-        // Separate message parsing module as this fucntion is already triple nested.
+        // Separate message parsing module.
         parseBLEMessage(robot, msg);
     }
 }
@@ -109,7 +124,7 @@ void parseBLEMessage(RobotController &robot, char msg) {
                     writeToBLE("Forward stopped");
                 } else {
                     writeToBLE("Forward command");
-                    robot.setManualState(ManualState::Stop);
+                    robot.setManualState(ManualState::Forward);
                 }
             }
             break;
@@ -208,8 +223,3 @@ void parseBLEMessage(RobotController &robot, char msg) {
 // }
 
 // Accept the struct and constrain the values between 0 and 250;
-
-
-
-/* In the automatic state machine, we break the behaviour out more explicitly into helper functions as they require timers for each
-state, this can get quite messy nested within the switch statement, so it's easier to read if we just separate them.*/

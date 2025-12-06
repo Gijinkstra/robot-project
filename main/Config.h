@@ -4,18 +4,18 @@
 // --------- Hardware Config ---------------
 constexpr byte MOTOR_PINS[] = {9, 10, 5, 6}; // Left to right.
 constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4};
+constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4};
 constexpr byte MOTOR_PIN_COUNT = sizeof(MOTOR_PINS) / 
                                  sizeof(MOTOR_PINS[0]);
 constexpr byte AN_SENSOR_COUNT = sizeof(AN_SENSOR_PINS) / 
                                  sizeof(AN_SENSOR_PINS[0]);
-constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4};
 constexpr byte DIG_SENSOR_COUNT = sizeof(DIG_SENSOR_PINS) / 
                                  sizeof(DIG_SENSOR_PINS[0]);
-constexpr unsigned int MIN_SPEED = 0;
-constexpr unsigned int MAX_SPEED = 255;   
 constexpr unsigned int AN_SENSOR_MAX = 1023;
 constexpr unsigned int AN_SENSOR_MIN = 0;
-constexpr unsigned int BAUD_RATE = 9600;
+constexpr unsigned int BAUD_RATE = 115200;
+constexpr int MIN_SPEED = 0;
+constexpr int MAX_SPEED = 255;
 
 // --------- Control Config ---------------
 constexpr byte PWM_LEVEL_INCREMENT = 5;
@@ -30,6 +30,9 @@ constexpr unsigned int SHARP_LEFT_THR = 3000;
 constexpr unsigned int SHARP_RIGHT_THR = 1000;
 constexpr unsigned int DEADBAND_ERROR = 20;
 constexpr unsigned int WAIT_TIME = 300;
+
+// --------- Comms Config ---------------
+constexpr unsigned long BLE_TIMER = 20;
 
 // --------- Control Types ---------------
 enum class AutoState {

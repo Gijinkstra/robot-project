@@ -6,7 +6,7 @@ RobotController::RobotController(MotorDriver &motors, LineSensors &sensors)
 void RobotController::setManualMode() {
     manualMode = true;
     autoMode   = false;
-    currentManualState = ManualState::Idle;
+    setManualState(ManualState::Idle);
 }
 
 void RobotController::setAutoMode() {
