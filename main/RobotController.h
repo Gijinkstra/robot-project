@@ -8,32 +8,39 @@ class RobotController {
 public:
     RobotController(MotorDriver &motors, LineSensors &sensors);
 
+    void update(unsigned long now);
     void setManualMode();
     void setAutoMode();
-
     bool isManualMode() const;
     bool isAutoMode() const;
-
-    ManualState getManualState() const;
     void setManualState(ManualState s);
 
+    ManualState getManualState() const;
     AutoState getAutoState() const;
 
-    void update(unsigned long now);
-
 private:
+    // State machines.
     void updateManual();
     void updateAuto();
+
+    // Helper function to keep track of timers + error on state change.
     void onAutoStateChange(AutoState newState);
 
     // Auto states
     void stateIdle();
-    void stateStop();
     void stateAccelerate();
     void statePIDLoop();
-    void stateLineFinish();
     void stateHardLeft();
     void stateHardRight();
+    void stateStop();
+    void stateTurn();
+
+    // PID helper functions
+    bool handlePIDTransitions();
+    int computeError();
+    float computeAdjust(int error);
+    int computeBaseSpeed(int error) const;
+    MotorSpeeds computePIDSpeeds(int baseSpeed, float adjust) const;
 
     // Members
     MotorDriver &motors;

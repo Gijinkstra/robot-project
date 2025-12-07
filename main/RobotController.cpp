@@ -27,7 +27,6 @@ void RobotController::update(unsigned long now) {
     currentTime = now;
 
     sensors.readAnalog();
-    sensors.readDigital();
     sensors.computeLinePosition();
 
     if (!manualMode && !autoMode) {
@@ -50,7 +49,7 @@ void RobotController::updateManual() {
         case ManualState::Left:      motors.left();     break;
         case ManualState::Right:     motors.right();    break;
         case ManualState::Stop:      motors.stop();     break;
-        default:                                         break;
+        default:                                        break;
     }
 }
 
@@ -61,9 +60,9 @@ void RobotController::updateAuto() {
         case AutoState::PIDLoop:     statePIDLoop();    break;
         case AutoState::HardLeft:    stateHardLeft();   break;
         case AutoState::HardRight:   stateHardRight();  break;
-        case AutoState::LineFinish:  stateLineFinish(); break;
+        case AutoState::Turn:        stateTurn();       break;
         case AutoState::Stop:        stateStop();       break;
-        default:                                         break;
+        default:                                        break;
     }
 }
 
@@ -89,14 +88,7 @@ void RobotController::onAutoStateChange(AutoState newState) {
 
 void RobotController::stateIdle() {
     motors.idle();
-    if ((currentTime - stateEntryTime) > WAIT_TIME) {
-        onAutoStateChange(AutoState::Accelerate);
-    }
-}
-
-void RobotController::stateStop() {
-    motors.stop();
-    if ((currentTime - stateEntryTime) > TURN_DURATION) {
+    if ((currentTime - stateEntryTime) > STOP_TIME) {
         onAutoStateChange(AutoState::Accelerate);
     }
 }
@@ -127,26 +119,81 @@ void RobotController::stateAccelerate() {
 }
 
 void RobotController::statePIDLoop() {
+    
+    if (handlePIDTransitions()) {
+        return;
+    }
+
+    int error = computeError();
+
+    float adjust = computeAdjust(error);
+    int baseSpeed = computeBaseSpeed(error);
+    MotorSpeeds speed = computePIDSpeeds(baseSpeed, adjust);
+
+    motors.setSpeed(speed);
+    lastError = error;
+}
+
+bool RobotController::handlePIDTransitions() {
+    if (sensors.allAnalogAbove()) {
+                onAutoStateChange(AutoState::Stop);
+                return true;
+            }
+
+        unsigned int currentPos = sensors.linePosition();
+        if (currentPos > SHARP_LEFT_THR) {
+            onAutoStateChange(AutoState::HardLeft);
+            return true;
+        } else if (currentPos < SHARP_RIGHT_THR) {
+            onAutoStateChange(AutoState::HardRight);
+            return true;
+        }
+
+    return false;
+}
+
+int RobotController::computeError() {
     int error = (int)SETPOINT - (int)sensors.linePosition();
     if (abs(error) < (int)DEADBAND_ERROR) error = 0;
+    return error;
+}
 
+float RobotController::computeAdjust(int error) {
     float adjust = (error * PIDGains::Kp)
                  + (PIDGains::Kd * (error - lastError));
+    return adjust;
+}
 
-    int leftSpeed  = SET_SPEED - (int)adjust;
-    int rightSpeed = SET_SPEED + (int)adjust;
+int RobotController::computeBaseSpeed(int error) const {
+    const int MIN_CORNER_SPEED = 40;
+    const float Kv = 0.12;
+
+    const int bigSpeed = 150;
+    int baseSpeed = (int)(bigSpeed - Kv * abs(error));
+    return constrain(baseSpeed, MIN_CORNER_SPEED, bigSpeed);
+}
+
+MotorSpeeds RobotController::computePIDSpeeds(int baseSpeed, float adjust) const {
+    int leftSpeed  = baseSpeed - (int)adjust;
+    int rightSpeed = baseSpeed + (int)adjust;
 
     MotorSpeeds speeds{
         leftSpeed,  MIN_SPEED,
         rightSpeed, MIN_SPEED
     };
-    motors.setSpeed(speeds);
-    lastError = error;
+    return speeds;
 }
 
-void RobotController::stateLineFinish() {
+void RobotController::stateStop() {
+    motors.stop();
+    if ((currentTime - stateEntryTime) > STOP_TIME) {
+        onAutoStateChange(AutoState::Turn);
+    }
+}
+
+void RobotController::stateTurn() {
     if ((currentTime - stateEntryTime) > TURN_DURATION) {
-        onAutoStateChange(AutoState::PIDLoop);
+        onAutoStateChange(AutoState::Accelerate);
     } else {
         motors.right();
     }
@@ -154,14 +201,14 @@ void RobotController::stateLineFinish() {
 
 void RobotController::stateHardLeft() {
     motors.left();
-    if (sensors.linePosition() < SHARP_LEFT_THR) {
+    if (sensors.linePosition() <= 2500) {
         onAutoStateChange(AutoState::PIDLoop);
     }
 }
 
 void RobotController::stateHardRight() {
     motors.right();
-    if (sensors.linePosition() > SHARP_RIGHT_THR) {
+    if (sensors.linePosition() > 1500) {
         onAutoStateChange(AutoState::PIDLoop);
     }
 }

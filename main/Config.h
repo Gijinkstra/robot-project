@@ -3,7 +3,7 @@
 
 // --------- Hardware Config ---------------
 constexpr byte MOTOR_PINS[] = {9, 10, 5, 6}; // Left to right.
-constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4};
+constexpr byte AN_SENSOR_PINS[] = {A0, A1, A2, A3, A4}; // Left to right.
 constexpr byte DIG_SENSOR_PINS[] = {2, 3, 4};
 constexpr byte MOTOR_PIN_COUNT = sizeof(MOTOR_PINS) / 
                                  sizeof(MOTOR_PINS[0]);
@@ -13,36 +13,42 @@ constexpr byte DIG_SENSOR_COUNT = sizeof(DIG_SENSOR_PINS) /
                                  sizeof(DIG_SENSOR_PINS[0]);
 constexpr unsigned int AN_SENSOR_MAX = 1023;
 constexpr unsigned int AN_SENSOR_MIN = 0;
-constexpr unsigned int BAUD_RATE = 115200;
 constexpr int MIN_SPEED = 0;
-constexpr int MAX_SPEED = 255;
+constexpr int MAX_SPEED = 100;
 
 // --------- Control Config ---------------
 constexpr byte PWM_LEVEL_INCREMENT = 5;
 constexpr byte ACCELERATION_INTERVAL = 5;
-constexpr unsigned int TURN_DURATION = 1000;
 constexpr unsigned int MOTOR_OFFSET = 12;
-constexpr unsigned int SET_SPEED = 60;
-constexpr unsigned int TURN_SPEED = 100;
 constexpr unsigned int SCALING_FACTOR = 1000;
 constexpr unsigned int SETPOINT = 2000;
-constexpr unsigned int SHARP_LEFT_THR = 3000;
-constexpr unsigned int SHARP_RIGHT_THR = 1000;
+constexpr unsigned int SET_SPEED = 100;
+constexpr unsigned int SHARP_LEFT_THR = 3500;
+constexpr unsigned int SHARP_RIGHT_THR = 500;
 constexpr unsigned int DEADBAND_ERROR = 20;
-constexpr unsigned int WAIT_TIME = 300;
+constexpr unsigned int TURN_DURATION = 1300; // Based on 255 turn speed.
+constexpr unsigned int TURN_SPEED = 255;
+constexpr unsigned int STOP_TIME = 300;
+constexpr unsigned int SENSOR_THR = 200;
 
 // --------- Comms Config ---------------
-constexpr unsigned long BLE_TIMER = 20;
+constexpr char DEVICE_NAME[] = "Chicken Ball Special";
+constexpr char TERMINAL_ID[] = "19B10010-E8F2-537E-4F6C-D104768A1214";
+constexpr char STRING_ID[] = "19B10011-E8F2-537E-4F6C-D104768A1215";
+constexpr int BLE_STRING_SIZE = 64;
+constexpr unsigned long BLE_TIMER = 20; // [ms]
+constexpr unsigned int BAUD_RATE = 115200;
+constexpr unsigned long UPDATE_INTERVAL = 100;
 
 // --------- Control Types ---------------
 enum class AutoState {
     Idle,
     Accelerate,
     PIDLoop,
-    Stop,
     HardLeft,
     HardRight,
-    LineFinish
+    Stop,
+    Turn
 };
 
 enum class ManualState {
@@ -76,6 +82,6 @@ namespace MotorPatterns {
 }
 
 namespace PIDGains {
-    constexpr float Kp = 0.22f; // SET_SPEED = 60;
-    constexpr float Kd = 0.02f; // SET_SPEED = 60;
+    constexpr float Kp = 0.55f; // SET_SPEED = 60;
+    constexpr float Kd = 0.03f; // SET_SPEED = 60;
 }

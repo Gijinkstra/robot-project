@@ -1,23 +1,17 @@
 #include "LineSensors.h"
 
 LineSensors::LineSensors(const byte anPins[], byte anCount,
-                         const byte digPins[], byte digCount)
-    : analogCount(anCount), digitalCount(digCount)
+                         unsigned int defaultThreshold)
+    : analogCount(anCount), threshold_(defaultThreshold)
 {
     for (byte i = 0; i < analogCount; i++) {
         analogPins[i] = anPins[i];
-    }
-    for (byte i = 0; i < digitalCount; i++) {
-        digitalPins[i] = digPins[i];
     }
 }
 
 void LineSensors::init() {
     for (byte i = 0; i < analogCount; i++) {
         pinMode(analogPins[i], INPUT);
-    }
-    for (byte i = 0; i < digitalCount; i++) {
-        pinMode(digitalPins[i], INPUT);
     }
 }
 
@@ -27,15 +21,13 @@ void LineSensors::readAnalog() {
     }
 }
 
-void LineSensors::readDigital() {
-    for (byte i = 0; i < digitalCount; i++) {
-        digitalValues[i] = digitalRead(digitalPins[i]);
-    }
+bool LineSensors::allAnalogAbove() const {
+    return allAnalogAbove(threshold_);
 }
 
-bool LineSensors::allDigitalOff() const {
-    for (byte i = 0; i < digitalCount; ++i) {
-        if (digitalValues[i]) {
+bool LineSensors::allAnalogAbove(unsigned int customThreshold) const {
+    for (byte i = 0; i < analogCount; i++) {
+        if (analogValues[i] < customThreshold) {
             return false;
         }
     }
@@ -66,8 +58,4 @@ unsigned int LineSensors::linePosition() const {
 
 int LineSensors::getAnalogReading(byte i) const {
     return analogValues[i];
-}
-
-bool LineSensors::getDigitalReading(byte i) const {
-    return digitalValues[i];
 }

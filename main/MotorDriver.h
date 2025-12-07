@@ -6,9 +6,11 @@ class MotorDriver {
 public:
     MotorDriver(const byte pins[MOTOR_PIN_COUNT]);
 
+    // 
     void init();
     void setSpeed(const MotorSpeeds &speed);
 
+    // Speed patterns
     void idle();
     void forward();
     void backward();
