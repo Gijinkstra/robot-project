@@ -140,12 +140,13 @@ bool RobotController::handlePIDTransitions() {
                 return true;
             }
 
-        unsigned int currentPos = sensors.linePosition();
-        if (currentPos > SHARP_LEFT_THR) {
-            onAutoStateChange(AutoState::HardLeft);
-            return true;
-        } else if (currentPos < SHARP_RIGHT_THR) {
+        int rightSensor = sensors.getAnalogReading(4);
+        int leftSensor = sensors.getAnalogReading(0);
+        if (rightSensor > 600) {
             onAutoStateChange(AutoState::HardRight);
+            return true;
+        } else if (leftSensor > 600) {
+            onAutoStateChange(AutoState::HardLeft);
             return true;
         }
 
@@ -201,14 +202,14 @@ void RobotController::stateTurn() {
 
 void RobotController::stateHardLeft() {
     motors.left();
-    if (sensors.linePosition() <= 2500) {
+    if (sensors.getAnalogReading(2) >= 80) {
         onAutoStateChange(AutoState::PIDLoop);
     }
 }
 
 void RobotController::stateHardRight() {
     motors.right();
-    if (sensors.linePosition() > 1500) {
+    if (sensors.getAnalogReading(2) >= 80) {
         onAutoStateChange(AutoState::PIDLoop);
     }
 }
